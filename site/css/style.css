@@ -212,3 +212,6 @@ a.btn { text-decoration: none; }
 .userline { display: flex; align-items: center; gap: var(--sp-1); }
 .userline > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .userline .btn { padding: 0 10px; font-size: var(--fs-s); }
+.prev { border: 1px dashed var(--input-border); border-radius: 12px; padding: 10px 12px; font-size: var(--fs-s); display: flex; flex-direction: column; gap: 4px; }
+.prev .u { font-family: var(--f-mono); font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.pill.warn { background: var(--warn-bg); color: var(--warn-text); }

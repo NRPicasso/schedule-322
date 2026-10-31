@@ -43,7 +43,8 @@ function makeServer() {
   const results = [];
   const check = async (name, fn) => { try { await fn(); results.push('OK   ' + name); } catch (e) { results.push('FAIL ' + name + ' — ' + e.message.split('\n')[0]); } };
   const srv = makeServer();
-  const page = await browser.newPage({ viewport: { width: 360, height: 780 } });
+  const context = await browser.newContext({ viewport: { width: 360, height: 780 }, permissions: ['clipboard-read', 'clipboard-write'] });
+  const page = await context.newPage();
   const errors = []; page.on('pageerror', (e) => errors.push(e.message));
   await page.route(API, async (route) => {
     if (srv.offline) return route.abort('internetdisconnected');
@@ -92,7 +93,7 @@ function makeServer() {
     await page.click('.prow:has-text("Уголовный процесс")');
     const before = srv.posts;
     await page.fill('#link', 'javascript:alert(1)'); await page.press('#link', 'Enter');
-    assert.match(await page.textContent('#link-err'), /https:\/\//);
+    assert.match(await page.textContent('#link-err'), /нет ссылки/);
     assert.equal(srv.posts, before);
     await page.keyboard.press('Escape'); await page.waitForTimeout(300);
   });
@@ -151,6 +152,47 @@ function makeServer() {
     assert.equal(srv.entry('2026-11-03', 'TUE-1140-bot').hw, 'Дебаты: аргументы сторон');
     assert.equal(srv.entry('2026-11-03', 'TUE-1140-bot').version, 3);
     await page.keyboard.press('Escape');
+  });
+
+  await check('шаг 5: ДЗ «фраза + ссылка» за 4 нажатия, «как в прошлый раз» — 1 нажатие в мастере', async () => {
+    await page.reload(); await page.waitForSelector('.fill');
+    await page.click('button[aria-label="Следующая неделя"]');               // 9–14 ноября, верхняя
+    await page.waitForFunction(() => /9 ноября/.test(document.querySelector('.top h1').textContent));
+    let clicks = 0; const click = async (sel) => { clicks++; await page.click(sel); };
+    await page.evaluate(() => navigator.clipboard.writeText('https://t.me/c/4323463486/39/5001'));
+    await click('.fill button');                                              // 1 «Заполнить» → муниципальное
+    await page.waitForSelector('.wz-foot');
+    await click('#sheet .chip >> nth=0');                                     // 2 частая фраза
+    await click('#paste-link');                                               // 3 «Вставить ссылку»
+    await page.waitForTimeout(300);
+    const munPhrase = await page.inputValue('#hw');
+    await click('.wz-foot .btn-primary');                                     // 4 «Дальше»
+    assert.equal(clicks, 4);
+    await page.waitForSelector('.save.saved', { timeout: 8000 });
+    const mun = srv.entry('2026-11-10', 'TUE-1140-top');
+    assert.equal(mun.hw, munPhrase);
+    assert.deepEqual(mun.links, ['https://t.me/c/4323463486/39/5001']);
+    // второй семинар — ГПП 15:00: прошлое занятие 27.10 «Задачи и доклады»
+    assert.match(await page.textContent('#sheet .prev'), /Задачи и доклады/);
+    await page.click('#as-before');                                           // 1 нажатие
+    await page.waitForSelector('.save.saved', { timeout: 8000 });
+    assert.equal(srv.entry('2026-11-10', 'TUE-1500-top').hw, 'Задачи и доклады');
+    assert.deepEqual(srv.entry('2026-11-10', 'TUE-1500-top').links, ['https://t.me/c/4323463486/26/3137']);
+  });
+
+  await check('шаг 5: вставка куска сообщения делится на подпись и ссылки; чужая тема — предупреждение', async () => {
+    await page.click('.wz-foot .btn-primary');                                // → ГПП 16:50
+    await page.evaluate(() => navigator.clipboard.writeText('Задачи 1–5 из сборника\nhttps://t.me/c/4323463486/40/777, https://youtu.be/abc'));
+    await page.focus('#link'); await page.keyboard.press('ControlOrMeta+V');
+    await page.waitForSelector('.save.saved', { timeout: 8000 });
+    const e = srv.entry('2026-11-10', 'TUE-1650-top');
+    assert.equal(e.hw, 'Задачи 1–5 из сборника');
+    assert.deepEqual(e.links, ['https://t.me/c/4323463486/40/777', 'https://youtu.be/abc']);
+    assert.match(await page.textContent('#sheet'), /Ссылка из темы «ОСД», а пара — Гражданский процесс/);
+    assert.match(await page.textContent('#sheet .links'), /YouTube/);
+    await page.click('#sheet button:has-text("Да, оставить")');
+    assert.doesNotMatch(await page.textContent('#sheet'), /Всё верно\?/);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
   });
 
   await check('360 px без горизонтальной прокрутки; группа видит новое ДЗ', async () => {
