@@ -2,47 +2,44 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
   <title>Расписание 322</title>
+  <link rel="stylesheet" href="fonts/fonts.css">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <!-- Шаг 1: временная страница для проверки логики. Полный интерфейс — шаг 2. -->
-  <main>
-    <h1>Расписание 322</h1>
-    <label for="date">Дата</label>
-    <input id="date" name="date" type="date" value="2026-10-27">
-    <p id="half"></p>
-    <ol id="pairs"></ol>
-    <p id="error" role="alert"></p>
+  <div id="top"></div>
+  <main class="wrap" id="app" aria-live="polite">
+    <div class="stack" aria-hidden="true"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
   </main>
+  <noscript><p class="wrap">Для расписания нужен включённый JavaScript.</p></noscript>
   <script type="module">
-    import { buildDay } from './src/schedule.js';
+    import { createGroupView } from './src/view.js';
+    import { moscowNow, parseNowOverride } from './src/time.js';
 
-    const $ = (id) => document.getElementById(id);
-    const TYPE = { lecture: 'лекция', seminar: 'семинар', other: 'занятие' };
+    const view = createGroupView({ top: document.getElementById('top'), app: document.getElementById('app') });
 
+    // Шаг 2: данные из файлов. На шаге 3 их заменит загрузка из Google Таблицы.
     async function loadData() {
-      const [seed, demo] = await Promise.all(
-        ['data/seed.json', 'data/demo-entries.json'].map((u) => fetch(u).then((r) => r.json())));
+      const [seed, demo] = await Promise.all(['data/seed.json', 'data/demo-entries.json'].map(async (url) => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(url + ': ' + res.status);
+        return res.json();
+      }));
       return { ...seed, ...demo };
     }
 
-    function render(data) {
-      const day = buildDay($('date').value, data);
-      $('half').textContent = day.half === 'top' ? 'верхняя неделя' : 'нижняя неделя';
-      $('pairs').replaceChildren(...day.pairs.map((p) => {
-        const li = document.createElement('li');
-        // текст — только через textContent: защита от внедрения чужого кода
-        li.textContent = `${p.numbers.join('')} · ${p.start}–${p.end} · ауд. ${p.room} · ${p.subject} (${TYPE[p.type]})`
-          + (p.hw ? ` — ДЗ: ${p.hw}` : '') + (p.links.length ? ` [ссылок: ${p.links.length}]` : '');
-        return li;
-      }));
-    }
+    const override = parseNowOverride(location.search);
+    const tick = () => view.show({ now: override || moscowNow(), nowMs: Date.now() });
 
     loadData()
-      .then((data) => { render(data); $('date').addEventListener('change', () => render(data)); })
-      .catch(() => { $('error').textContent = 'Не удалось загрузить расписание. Откройте страницу через локальный сервер.'; });
+      .then((data) => { view.show({ data, now: override || moscowNow(), nowMs: Date.now() }); setInterval(tick, 60 * 1000); })
+      .catch(() => {
+        document.getElementById('app').replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Не удалось загрузить расписание. Проверьте интернет и обновите страницу.' }));
+      });
   </script>
 </body>
 </html>

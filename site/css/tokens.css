@@ -1,0 +1,23 @@
+/* Дизайн-токены «журнала группы» — см. DESIGN.md. В остальных стилях — только var(--…). */
+:root {
+  --paper: #f2f4f5; --surface: #ffffff; --ink: #15181d; --ink-2: #525b68; --grid: rgb(21 24 29 / .045); --line: #e2e5e9;
+  --accent: #2a3aa8; --on-accent: #ffffff; --accent-weak: #e6e8f8; --input-border: #7b8492; --focus: #2a3aa8;
+  --stamp-move: #2a3aa8; --stamp-cancel: #b3261e; --ok: #1b7a35; --warn-bg: #fff1cc; --warn-text: #6b4300; --now: #fff6d6; --scrim: rgb(10 12 16 / .45);
+  --s-mun-bg: #d9f2ee; --s-mun: #0b5c52; --s-gpp-bg: #dde7fb; --s-gpp: #1f4aa8; --s-upp-bg: #f6e2d9; --s-upp: #8a3412; --s-up-bg: #f9dde2; --s-up: #9b1c36;
+  --s-gp-bg: #e0f2dc; --s-gp: #2b6a1f; --s-tp-bg: #fbecc9; --s-tp: #7a4d00; --s-osd-bg: #ebe2fb; --s-osd: #5a2fb0; --s-mp-bg: #d8eff8; --s-mp: #0d5f80; --s-fk-bg: #e6e8eb; --s-fk: #3f4752;
+  --f-display: "Unbounded", "Onest", system-ui, sans-serif;
+  --f-body: "Onest", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --fs-xs: .75rem; --fs-s: .875rem; --fs-m: 1rem; --fs-l: 1.25rem; --fs-xl: 1.75rem;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 16px; --sp-4: 24px; --sp-5: 32px; --r: 14px; --tap: 44px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f1215; --surface: #181c21; --ink: #e8eaed; --ink-2: #a2aab5; --grid: rgb(232 234 237 / .035); --line: #2a3038;
+    --accent: #a3adff; --on-accent: #10163d; --accent-weak: #232a4d; --input-border: #717a87; --focus: #a3adff;
+    --stamp-move: #a3adff; --stamp-cancel: #ff8b80; --ok: #6fd08b; --warn-bg: #3a2d0c; --warn-text: #ffd27a; --now: #2b2714; --scrim: rgb(0 0 0 / .6);
+    --s-mun-bg: #12332f; --s-mun: #7fe0d2; --s-gpp-bg: #172742; --s-gpp: #9dbcff; --s-upp-bg: #3a2219; --s-upp: #f5a882; --s-up-bg: #3c1a22; --s-up: #ff9aae;
+    --s-gp-bg: #18301a; --s-gp: #93db85; --s-tp-bg: #3a2c10; --s-tp: #ffcd6b; --s-osd-bg: #2a1f45; --s-osd: #c4a8ff; --s-mp-bg: #10303d; --s-mp: #84d3f2; --s-fk-bg: #262b31; --s-fk: #c3c9d1;
+    color-scheme: dark;
+  }
+}

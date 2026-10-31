@@ -1,0 +1,119 @@
+/* Стили сайта. Цвета, шрифты и отступы — только из tokens.css. */
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { scroll-padding-top: 140px; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; color: var(--ink); font-family: var(--f-body); font-size: var(--fs-m); line-height: 1.45;
+  background-color: var(--paper);
+  /* разлиновка как в официальном расписании — только декор */
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.wrap { max-width: 640px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main.wrap { padding-block: var(--sp-3) var(--sp-5); }
+h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 700; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.display { font-family: var(--f-display); letter-spacing: -.01em; }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink-2); }
+.small { font-size: var(--fs-s); } .xs { font-size: var(--fs-xs); }
+.caps { text-transform: uppercase; letter-spacing: .08em; font-size: var(--fs-xs); font-weight: 700; }
+.stack { display: flex; flex-direction: column; gap: var(--sp-3); }
+.row { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* кнопки */
+button { font: inherit; color: inherit; }
+.btn { min-height: var(--tap); padding: 0 var(--sp-3); border-radius: var(--r); border: 1px solid transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; transition: background-color .15s, transform .1s; }
+.btn-secondary { background: var(--accent-weak); color: var(--accent); }
+.btn:active { transform: scale(.98); }
+@media (hover: hover) { .btn-secondary:hover { background: color-mix(in srgb, var(--accent-weak) 75%, var(--accent)); } }
+.icon-btn { min-width: var(--tap); min-height: var(--tap); border: 0; background: transparent; color: var(--ink-2); cursor: pointer; border-radius: var(--r); display: inline-grid; place-items: center; }
+.icon-btn svg { width: 20px; height: 20px; }
+@media (hover: hover) { .icon-btn:hover { background: var(--accent-weak); color: var(--accent); } }
+
+/* шапка с вкладками */
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 15; background: color-mix(in srgb, var(--paper) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 16; background: var(--paper); }
+.top .wrap { padding-block: var(--sp-2); }
+.brand { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.brand b { font-family: var(--f-display); font-size: .95rem; }
+.tabs { display: flex; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 3px; gap: 2px; }
+.tabs button { flex: 1; min-height: 40px; border: 0; background: transparent; border-radius: 9px; cursor: pointer; font-weight: 600; font-size: var(--fs-s); }
+.tabs button[aria-selected="true"] { background: var(--ink); color: var(--surface); }
+
+/* плитка предмета и половинка клетки */
+.tile { display: inline-grid; place-items: center; min-width: 46px; height: 32px; padding: 0 6px; border-radius: 8px; font-family: var(--f-display); font-size: .72rem; font-weight: 700; letter-spacing: .02em; background: var(--t-bg, var(--s-fk-bg)); color: var(--t, var(--s-fk)); flex: none; }
+.t-mun { --t-bg: var(--s-mun-bg); --t: var(--s-mun); } .t-gpp { --t-bg: var(--s-gpp-bg); --t: var(--s-gpp); }
+.t-upp { --t-bg: var(--s-upp-bg); --t: var(--s-upp); } .t-up { --t-bg: var(--s-up-bg); --t: var(--s-up); }
+.t-gp { --t-bg: var(--s-gp-bg); --t: var(--s-gp); } .t-tp { --t-bg: var(--s-tp-bg); --t: var(--s-tp); }
+.t-osd { --t-bg: var(--s-osd-bg); --t: var(--s-osd); } .t-mp { --t-bg: var(--s-mp-bg); --t: var(--s-mp); }
+.t-fk { --t-bg: var(--s-fk-bg); --t: var(--s-fk); }
+.half { display: inline-flex; align-items: center; gap: 6px; }
+.half svg { width: 14px; height: 14px; }
+
+/* заголовок дня */
+.g-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
+.g-head .big { font-family: var(--f-display); font-size: 2.6rem; font-weight: 700; line-height: .95; }
+.g-head .big small { display: block; font-size: .9rem; font-weight: 500; color: var(--ink-2); margin-top: 6px; font-family: var(--f-body); }
+
+/* «идёт сейчас» */
+.nowcard { background: var(--ink); color: var(--surface); border-radius: 18px; padding: 14px var(--sp-3); display: flex; flex-direction: column; gap: 8px; }
+.nowcard .row { justify-content: space-between; }
+.nowcard .room { font-family: var(--f-mono); font-size: 1.6rem; font-weight: 700; line-height: 1; }
+.nowcard .track { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--surface) 25%, transparent); overflow: hidden; }
+.nowcard .track i { display: block; height: 100%; background: var(--surface); transform-origin: left; }
+
+/* пометки дня */
+.notes { display: flex; flex-wrap: wrap; gap: 6px; }
+.note { font-size: var(--fs-s); background: var(--warn-bg); color: var(--warn-text); border-radius: 8px; padding: 4px 10px; font-weight: 600; }
+
+/* лента дня */
+.tl { position: relative; display: flex; flex-direction: column; gap: 10px; padding-left: 4.2rem; margin: 0; list-style: none; }
+.tl::before { content: ""; position: absolute; left: 3.3rem; top: 6px; bottom: 6px; width: 2px; background: var(--line); }
+.gc { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+.gc .when { position: absolute; left: -4.2rem; top: 12px; width: 3rem; text-align: right; font-family: var(--f-mono); font-size: .85rem; font-weight: 700; line-height: 1.2; }
+.gc .when span { display: block; font-weight: 500; color: var(--ink-2); font-size: .75rem; }
+.gc::before { content: ""; position: absolute; left: calc(-.9rem - 6px); top: 16px; width: 10px; height: 10px; border-radius: 50%; background: var(--surface); border: 2px solid var(--ink-2); }
+.gc.now { background: var(--now); border-color: color-mix(in srgb, var(--warn-text) 40%, transparent); }
+.gc.now::before { background: var(--ink); border-color: var(--ink); }
+.gc .head { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.gc .name { font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+.gc .sub { grid-column: 1 / -1; font-size: var(--fs-s); color: var(--ink-2); }
+.gc .room { font-family: var(--f-mono); font-size: 1.35rem; font-weight: 700; text-align: right; line-height: 1; overflow-wrap: anywhere; }
+.gc .room small { display: block; font-family: var(--f-body); font-size: .68rem; font-weight: 600; color: var(--ink-2); }
+.gc .info { grid-column: 1 / -1; margin-top: 4px; padding-top: 8px; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-s); min-width: 0; }
+.gc .info .hw { white-space: pre-wrap; overflow-wrap: anywhere; }
+.gc .info a { font-family: var(--f-mono); font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.gc.dim .name, .gc.dim .room, .gc.dim .when { text-decoration: line-through; color: var(--ink-2); }
+.gc.dim .tile { opacity: .55; }
+.pill { font-size: var(--fs-xs); font-weight: 700; border-radius: 6px; padding: 1px 6px; background: var(--accent-weak); color: var(--accent); align-self: flex-start; }
+.changed { font-size: var(--fs-xs); color: var(--warn-text); background: var(--warn-bg); border-radius: 6px; padding: 1px 6px; align-self: flex-start; font-weight: 600; }
+.stamp { position: absolute; right: 12px; bottom: 10px; transform: rotate(-5deg); border: 2px solid currentColor; border-radius: 6px; padding: 2px 8px; font-family: var(--f-display); font-size: .62rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; background: color-mix(in srgb, var(--surface) 80%, transparent); }
+.stamp.move { color: var(--stamp-move); } .stamp.cancel { color: var(--stamp-cancel); }
+.reason { font-weight: 700; color: var(--stamp-cancel); }
+
+/* неделя */
+.weekline { display: flex; align-items: center; gap: var(--sp-1); }
+.weekline .t { flex: 1; text-align: center; min-width: 0; }
+.weekline h1 { font-size: 1.15rem; }
+.wday h2 { font-family: var(--f-display); font-size: 1rem; }
+
+/* ДЗ */
+.hwday h2 { font-family: var(--f-display); font-size: .95rem; margin-bottom: var(--sp-2); }
+.hwitem { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; align-items: start; }
+.hwitem .b { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: var(--fs-s); }
+.hwitem .hw { white-space: pre-wrap; overflow-wrap: anywhere; }
+.hwitem a { font-family: var(--f-mono); font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+/* пусто / ошибка / заглушки загрузки */
+.empty { background: var(--surface); border: 1px dashed var(--input-border); border-radius: 16px; padding: var(--sp-4); text-align: center; display: flex; flex-direction: column; gap: var(--sp-2); align-items: center; }
+.banner { background: var(--warn-bg); color: var(--warn-text); border-radius: 12px; padding: 10px 12px; font-size: var(--fs-s); font-weight: 600; }
+.skeleton { height: 76px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); }
+
+@media (max-width: 360px) {
+  .tl { padding-left: 3.6rem; } .tl::before { left: 2.8rem; } .gc .when { left: -3.6rem; width: 2.6rem; font-size: .78rem; }
+  .gc::before { left: calc(-.8rem - 6px); } .g-head .big { font-size: 2.2rem; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
