@@ -123,11 +123,8 @@ test('отметка «ДЗ нет» передаётся в пару', () => {
   assert.equal(buildDay('2026-11-03', d).pairs[0].noHw, true);
 });
 
-test('вне семестра пар по шаблону нет (до 14.09 и после 31.12), но день помечен', () => {
-  const before = buildDay('2026-09-08', data());
-  const after = buildDay('2027-01-12', data());
-  assert.equal(before.pairs.length, 0);
-  assert.equal(before.outOfSemester, true);
-  assert.equal(after.pairs.length, 0);
-  assert.equal(buildDay('2026-12-29', data()).outOfSemester, false);
+test('после конца семестра шаблон продолжает действовать (решение владельца)', () => {
+  const day = buildDay('2027-01-12', data()); // вторник
+  assert.equal(day.half, 'bottom');
+  assert.deepEqual(day.pairs.map((p) => p.subject), ['Муниципальное', 'УПП', 'ТП']);
 });

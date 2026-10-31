@@ -58,9 +58,7 @@ export function createGroupView({ top, app }) {
     }
     if (day.notes.length) out.push(h('div', { class: 'notes' }, day.notes.map((n) => h('span', { class: 'note', text: n }))));
 
-    if (day.outOfSemester && !day.pairs.length) {
-      out.push(emptyBox('Семестр закончился', `Расписание было до ${dayMonth(data.settings.semesterEnd)}. Новое появится, когда его внесут.`));
-    } else if (!day.pairs.length) {
+    if (!day.pairs.length) {
       const nd = nextStudyDay(date, data);
       const first = buildDay(nd, data).pairs.find((p) => p.numbers.length);
       out.push(emptyBox(tab === 'today' ? 'Сегодня пар нет' : 'В этот день пар нет',

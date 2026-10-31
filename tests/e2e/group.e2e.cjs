@@ -47,12 +47,12 @@ const SITE = process.env.SITE || 'http://localhost:8766';
       const hrefs = await page.locator('.gc a').evaluateAll((as) => as.map((a) => [a.getAttribute('href'), a.getAttribute('rel')]));
       assert.ok(hrefs.length >= 6 && hrefs.every(([h, r]) => /^https:/.test(h) && r === 'noopener noreferrer'));
     });
-    await check(`${scheme} ${width}px: вкладка ДЗ и пустая неделя вне семестра`, async () => {
+    await check(`${scheme} ${width}px: вкладка ДЗ; после конца семестра шаблон продолжается`, async () => {
       await open('?now=2026-10-26T09:00');
       await page.click('[role=tab]:has-text("ДЗ")');
       assert.match(await page.textContent('#app'), /К вторнику, 27 октября/);
-      await open('?now=2027-01-12T12:00');
-      assert.match(await page.textContent('#app'), /Семестр закончился/);
+      await open('?now=2027-01-12T09:00');
+      assert.equal(await page.locator('.tl > li').count(), 3);
     });
     if (width === 360) await page.goto(SITE + '/?now=2026-11-03T14:00').then(() => page.waitForSelector('.tl')).then(() => page.screenshot({ path: `/tmp/claude-0/-home-claude/cc8a014e-a473-5ff1-b0b2-4ac4853990a4/scratchpad/g-${scheme}.png`, fullPage: true }));
     await check(`${scheme} ${width}px: без ошибок в консоли`, async () => assert.deepEqual(errors, []));
