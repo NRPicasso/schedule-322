@@ -29,6 +29,7 @@ function makeServer() {
       const name = codes[req.code];
       if (!name) return { ok: false, error: 'bad-code', message: 'Код не подошёл. Проверьте цифры.' };
       if (req.action === 'login') return { ok: true, name };
+      if (srv.rejectAll) return { ok: true, name, results: req.ops.map((o) => ({ opId: o.opId, ok: false, error: 'invalid', message: 'проверка: отклонено' })) };
       const out = ctx.api.processOps_(state, clone(req.ops), pairIds, { name, now: new Date().toISOString() }, (o) => seen.get(o.opId) || null);
       out.results.forEach((r) => { if (r.ok) seen.set(r.opId, r); });
       logs.push(...out.logs);
@@ -237,10 +238,40 @@ function makeServer() {
     await toWeek('26 октября'); assert.match(await row('2026-10-29', 'Организация судебной').textContent(), /ауд\. 221/);
     await toWeek('9 ноября');
     await row('2026-11-12', 'Организация судебной').click(); await page.click('#ch-room');
-    await page.click('#sheet button:has-text("Снять постоянную замену")'); await saved();
-    assert.equal(srv.rule('THU-1320', 'room', '2026-11-05'), undefined);
+    assert.match(await page.textContent('#f-unrule'), /с 12 ноября \(станет: 221\)/);
+    await page.click('#f-unrule'); await saved();
+    assert.equal(srv.rule('THU-1320', 'room', '2026-11-05').to, '2026-11-11');   // прошлое не переписано: правило оборвано накануне
     await page.keyboard.press('Escape'); await page.waitForTimeout(300);
     assert.match(await row('2026-11-12', 'Организация судебной').textContent(), /ауд\. 221/);
+    await toWeek('2 ноября'); assert.match(await row('2026-11-05', 'Организация судебной').textContent(), /ауд\. 401/);
+  });
+
+  await check('шаг 6: время «с этого дня и дальше» — два правила одним действием, предупреждение о следующей неделе, «Отменить» откатывает оба', async () => {
+    await toWeek('2 ноября');
+    await row('2026-11-05', 'Организация судебной').click();
+    await page.click('#ch-time'); await page.click('.grid-times button[data-start="11:40"]');
+    await page.check('input[name=scope][value=from]');
+    assert.match(await page.textContent('#sheet'), /12 ноября в это время уже стоит Международное право/);   // 12.11 — верхняя неделя, там МП в 11:40
+    assert.match(await page.textContent('#t-save'), /с 5 ноября и дальше/);
+    await page.click('#t-save'); await saved();
+    assert.equal(srv.rule('THU-1320', 'start', '2026-11-05').value, '11:40');
+    assert.equal(srv.rule('THU-1320', 'end', '2026-11-05').value, '13:10');
+    await page.click('#toast button:has-text("Отменить")'); await page.waitForTimeout(500); await saved();
+    assert.equal(srv.rule('THU-1320', 'start', '2026-11-05'), undefined);
+    assert.equal(srv.rule('THU-1320', 'end', '2026-11-05'), undefined);
+    // ещё раз — и снимаем кнопкой из карточки другой недели
+    await page.click('#ch-time'); await page.click('.grid-times button[data-start="11:40"]');
+    await page.check('input[name=scope][value=from]'); await page.click('#t-save'); await saved();
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await toWeek('9 ноября');  assert.match(await row('2026-11-12', 'Организация судебной').textContent(), /11:40/);
+    await toWeek('26 октября'); assert.match(await row('2026-10-29', 'Организация судебной').textContent(), /13:20/);
+    await toWeek('9 ноября');
+    await row('2026-11-12', 'Организация судебной').click(); await page.click('#ch-time'); await page.click('#t-unrule'); await saved();
+    assert.equal(srv.rule('THU-1320', 'start', '2026-11-05').to, '2026-11-11');
+    assert.equal(srv.rule('THU-1320', 'end', '2026-11-05').to, '2026-11-11');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    assert.match(await row('2026-11-12', 'Организация судебной').textContent(), /13:20/);
+    await toWeek('2 ноября'); assert.match(await row('2026-11-05', 'Организация судебной').textContent(), /11:40/);
   });
 
   await check('шаг 6: отмена пары с причиной и возврат одной кнопкой', async () => {
@@ -299,6 +330,9 @@ function makeServer() {
     await row('2026-11-07', 'Консультация').click();
     await page.click('#ch-time'); await page.click('.grid-times button[data-start="16:50"]'); await page.click('#t-save'); await saved();
     assert.equal(srv.state.extras.find((e) => e.id === x.id).start, '16:50');
+    await page.click('#ch-delete');
+    assert.match(await page.textContent('#ch-delete'), /ещё раз/);                  // удаление — со второго нажатия
+    assert.equal(srv.state.extras.length, 1);
     await page.click('#ch-delete'); await saved();
     assert.equal(srv.state.extras.length, 0);
     assert.equal(await row('2026-11-07', 'Консультация').count(), 0);
@@ -319,10 +353,104 @@ function makeServer() {
     await page.keyboard.press('Escape'); await page.waitForTimeout(300);
   });
 
+
+  await check('шаг 6, проверка: преподаватель «по дату»; более поздняя замена снимается с предупреждением', async () => {
+    await toWeek('16 ноября');
+    await row('2026-11-19', 'Трудовое право').click();
+    await page.click('#ch-teacher'); await page.fill('#f-value', 'Борисов Б. Б.'); await page.check('input[name=scope][value=from]');
+    await page.click('#f-save'); await saved();
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await toWeek('2 ноября');
+    await row('2026-11-05', 'Трудовое право').click();
+    await page.click('#ch-teacher'); await page.fill('#f-value', 'Петров П. П.'); await page.check('input[name=scope][value=from]');
+    assert.match(await page.textContent('#sheet'), /более поздняя постоянная замена \(с 19 ноября — Борисов Б\. Б\.\)/);
+    await page.fill('#scope-to', '2026-11-12'); await page.dispatchEvent('#scope-to', 'change');
+    assert.doesNotMatch(await page.textContent('#sheet'), /более поздняя/);       // до 12.11 — поздняя замена не мешает
+    assert.match(await page.textContent('#f-save'), /по 12 ноября/);
+    await page.click('#f-save'); await saved();
+    assert.equal(srv.rule('THU-1650-bot', 'teacher', '2026-11-05').to, '2026-11-12');
+    assert.equal(srv.rule('THU-1650-bot', 'teacher', '2026-11-19').value, 'Борисов Б. Б.');
+    await page.click('#ch-teacher'); await page.check('input[name=scope][value=from]'); await page.click('#f-save'); await saved();
+    assert.equal(srv.rule('THU-1650-bot', 'teacher', '2026-11-05').to, '');
+    assert.equal(srv.rule('THU-1650-bot', 'teacher', '2026-11-19'), undefined);         // поздняя снята
+    await page.click('#toast button:has-text("Отменить")'); await page.waitForTimeout(500); await saved();
+    assert.equal(srv.rule('THU-1650-bot', 'teacher', '2026-11-19').value, 'Борисов Б. Б.'); // «Отменить» вернул и её
+    assert.equal(srv.rule('THU-1650-bot', 'teacher', '2026-11-05').to, '2026-11-12');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  });
+
+  await check('шаг 6, проверка: без сети «перенос → вернуть → перенос заново» доходит без отказа и с ДЗ', async () => {
+    srv.offline = true;
+    await row('2026-11-05', 'Уголовное право').click();
+    await page.click('#ch-move'); await page.fill('#m-date', '2026-11-12'); await page.dispatchEvent('#m-date', 'change'); await page.click('#m-save');
+    await page.click('#ch-unmove');
+    await page.click('#ch-move'); await page.fill('#m-date', '2026-11-07'); await page.dispatchEvent('#m-date', 'change'); await page.click('#m-save');
+    await page.fill('#hw', 'Глава 7'); await page.waitForTimeout(1300);
+    srv.offline = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await page.waitForFunction(() => /Сохранено/.test(document.querySelector('.save').textContent), null, { timeout: 25000 });
+    assert.equal(await page.locator('.dialog').count(), 0);
+    const live = srv.state.extras.filter((e) => e.srcPairId === 'THU-1500');
+    assert.equal(live.length, 1); assert.equal(live[0].date, '2026-11-07'); assert.equal(live[0].hw, 'Глава 7');
+  });
+
+  await check('шаг 6, проверка: «Отменить» после «Вернуть перенос» снова переносит (без отказа сервера)', async () => {
+    await page.click('#ch-unmove'); await saved();
+    assert.equal(srv.state.extras.filter((e) => e.srcPairId === 'THU-1500').length, 0);
+    assert.equal(srv.entry('2026-11-05', 'THU-1500').hw, 'Глава 7');
+    await page.click('#toast button:has-text("Отменить")'); await page.waitForTimeout(500); await saved();
+    assert.equal(await page.locator('.dialog').count(), 0);
+    const live = srv.state.extras.filter((e) => e.srcPairId === 'THU-1500');
+    assert.equal(live.length, 1); assert.equal(live[0].date, '2026-11-07');
+  });
+
+  await check('шаг 6, проверка: конфликт по перенесённой паре — выбор варианта, «Оставить мой» сохраняет мой текст', async () => {
+    const x = srv.state.extras.find((e) => e.srcPairId === 'THU-1500');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await toWeek('2 ноября');
+    await row('2026-11-07', 'Уголовное право').click();
+    srv.post({ code: '654321', ops: [{ opId: 'op-other-0002', type: 'extra.update', date: x.date, id: x.id, baseVersion: x.version, patch: { hw: 'Глава 8 от Активист 2' } }] });
+    await page.fill('#hw', 'Глава 7 и 8'); await page.waitForTimeout(1300);
+    await page.waitForSelector('.dialog');
+    assert.match(await page.textContent('.dialog'), /Активист 2 уже изменил[\s\S]*Глава 8 от Активист 2[\s\S]*Глава 7 и 8/);
+    await page.click('.dialog button:has-text("Оставить мой")'); await saved();
+    assert.equal(srv.state.extras.find((e) => e.id === x.id).hw, 'Глава 7 и 8');
+    assert.equal(await page.locator('.dialog').count(), 0);
+  });
+
+  await check('шаг 6, проверка: отменить перенесённую пару совсем — перенос снят, исходный день зачёркнут с причиной', async () => {
+    await page.click('#ch-cancel'); await page.click('#sheet .chip:has-text("Мероприятие")'); await page.click('#c-save'); await saved();
+    assert.equal(srv.state.extras.filter((e) => e.srcPairId === 'THU-1500').length, 0);
+    assert.equal(srv.entry('2026-11-05', 'THU-1500').cancelled, true);
+    assert.equal(srv.entry('2026-11-05', 'THU-1500').reason, 'Мероприятие');
+    assert.match(await page.textContent('#sheet .banner'), /Пара отменена: Мероприятие/);
+    await page.click('#uncancel'); await saved();
+    assert.equal(srv.entry('2026-11-05', 'THU-1500').cancelled, false);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  });
+
+  await check('шаг 6, проверка: два отказа подряд — окна по одному, ни одно не потеряно', async () => {
+    srv.offline = true;
+    await page.click('#day-2026-11-06 button:has-text("+ пометка")');
+    await page.click('#sheet .chip:has-text("Сменка")'); await page.click('#sheet .chip:has-text("Контрольная")');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    srv.offline = false; srv.rejectAll = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await page.waitForSelector('.dialog', { timeout: 15000 });
+    assert.match(await page.textContent('.dialog'), /Сменка/);
+    srv.rejectAll = false;
+    await page.click('.dialog button:has-text("Понятно")'); await page.waitForTimeout(300);
+    assert.match(await page.textContent('.dialog'), /Контрольная/);
+    await page.click('.dialog button:has-text("Понятно")'); await page.waitForTimeout(800);
+    assert.equal(await page.locator('.dialog').count(), 0);
+    await page.reload(); await page.waitForSelector('.fill');
+  });
+
   await check('360 px без горизонтальной прокрутки; группа видит новое ДЗ', async () => {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth) <= 360);
     await page.goto(SITE + '/?now=2026-11-03T09:00'); await page.waitForSelector('.tl');
     assert.match(await page.textContent('.tl'), /Дебаты: аргументы сторон/);
+    await page.waitForFunction(() => /305/.test(document.querySelector('.tl').textContent), null, { timeout: 10000 }).catch(() => {}); // сначала показывается копия из телефона, потом свежие данные
     assert.match(await page.textContent('.tl'), /305/);                       // разовая аудитория видна группе
     await page.goto(SITE + '/?now=2026-11-07T09:00'); await page.waitForSelector('.tl');
     assert.match(await page.textContent('.tl'), /Организация судебной/);        // перенос виден группе

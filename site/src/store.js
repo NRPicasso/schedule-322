@@ -20,6 +20,18 @@ export function keyOf(op) {
     default: return null;
   }
 }
+/**
+ * Все объекты, которых касается операция. Перенос кроме своей записи «занимает» исходную пару:
+ * иначе новый перенос той же пары мог уйти на сервер раньше, чем удаление старого, и сервер
+ * отклонил бы его как «уже перенесена» (найдено при проверке шага 6).
+ */
+export function keysOf(op) {
+  const k = keyOf(op);
+  const out = k === null ? [] : [k];
+  const src = op.type === 'extra.add' ? op.extra : op.type === 'extra.remove' ? op : null;
+  if (src && src.srcPairId) out.push(`s|${src.srcDate}|${src.srcPairId}`);
+  return out;
+}
 const sameKey = (a, b) => { const k = keyOf(a); return k !== null && k === keyOf(b); };
 const mergeable = (op) => op.type === 'entry' || op.type === 'extra.update'; // правки с patch можно сливать
 const versioned = mergeable;
@@ -106,11 +118,13 @@ export function inverseOf(data, op) {
       return op.type === 'rule.set' ? { type: 'rule.remove', date: op.date, pairId: op.pairId, field: op.field } : null;
     }
     case 'extra.add':
-      return { type: 'extra.remove', date: op.date, id: op.extra.id };
+      return { type: 'extra.remove', date: op.date, id: op.extra.id, ...(op.extra.srcPairId ? { srcDate: op.extra.srcDate, srcPairId: op.extra.srcPairId } : {}) };
     case 'extra.remove': {
       const x = findExtra(data, op.id);
       if (!x) return null;
       const { version, by, updatedAt, ...rest } = clone(x);
+      // пустые поля не отправляем: сервер хранит у переноса пустой тип, а пустой тип он не примет
+      for (const k of Object.keys(rest)) if (rest[k] === '' || rest[k] == null) delete rest[k];
       // вернуть пару — новой записью: старая на сервере уже удалена
       return { type: 'extra.add', date: x.date, extra: { ...rest, id: 'X-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) } };
     }
@@ -156,14 +170,15 @@ export function createQueue(storage) {
 
     /** Взять пачку для отправки: не больше одной операции на объект, по порядку. */
     takeBatch(max = 20) {
-      const busy = new Set(items.filter((i) => i.inFlight).map(keyOf).filter(Boolean));
+      const busy = new Set(items.filter((i) => i.inFlight).flatMap(keysOf));
       const batch = [];
       for (const i of items) {
         if (batch.length >= max) break;
         if (i.inFlight) continue;
-        const key = keyOf(i);
-        if (key && busy.has(key)) continue; // по этому объекту уже есть операция в пути или в пачке
-        if (key) busy.add(key);
+        const keys = keysOf(i);
+        const blocked = keys.some((k) => busy.has(k)); // по этому объекту уже есть операция в пути или в пачке
+        keys.forEach((k) => busy.add(k));               // ждущая операция тоже держит очередь: порядок не нарушается
+        if (blocked) continue;
         i.inFlight = true; i.sent = true;
         batch.push(i);
       }
@@ -199,7 +214,12 @@ export function applyResult(data, queue, op, result) {
   const waiting = queue.has((i) => sameKey(i, op));
   const local = result.entry ? findEntry(data, op.date, op.pairId) : findExtra(data, serverObj.id);
   const list = result.entry ? data.entries : (data.extras = data.extras || []);
-  if (!local) { list.push(clone(serverObj)); return; }
+  if (!local) {
+    // объекта на экране нет: либо его ещё не было (добавляем ответ сервера), либо активист уже
+    // удалил его и удаление ждёт в очереди — тогда не воскрешаем (найдено при проверке шага 6)
+    if (!waiting) list.push(clone(serverObj));
+    return;
+  }
   if (waiting) local.version = result.version; // на экране уже более свежая правка — её не трогаем
   else Object.assign(local, clone(serverObj)); // иначе берём то, что записал сервер (кто, когда, версия)
 }

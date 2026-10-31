@@ -149,7 +149,7 @@ test('правило «с этой даты»: применяется, «Отм�
 test('перенос/доп. пара: добавить, изменить, удалить и отменить каждое', () => {
   const data = { entries: [], dayNotes: [], rules: [], extras: [] };
   const add = { type: 'extra.add', date: '2026-11-05', extra: { id: 'X-test-01', date: '2026-11-05', start: '18:30', end: '20:00', srcDate: '2026-11-03', srcPairId: 'A' } };
-  assert.deepEqual(inverseOf(data, add), { type: 'extra.remove', date: '2026-11-05', id: 'X-test-01' });
+  assert.deepEqual(inverseOf(data, add), { type: 'extra.remove', date: '2026-11-05', id: 'X-test-01', srcDate: '2026-11-03', srcPairId: 'A' });
   applyOp(data, add, {});
   const upd = { type: 'extra.update', date: '2026-11-07', id: 'X-test-01', patch: { date: '2026-11-07', start: '11:40', end: '13:10' } };
   assert.deepEqual(inverseOf(data, upd).patch, { date: '2026-11-05', start: '18:30', end: '20:00' });
@@ -182,4 +182,31 @@ test('очередь: одна операция на доп. пару в отп�
   applyResult(data, q, batch[0], { opId: 'op-x0000001', ok: true, version: 1, extra: { id: 'X-q-0001', date: 'd', start: '10:00', end: '11:30', version: 1 } });
   assert.equal(q.list()[0].baseVersion, 1);
   assert.equal(data.extras[0].version, 1);
+});
+
+test('шаг 6, проверка: новый перенос той же пары не обгоняет удаление старого', () => {
+  const q = createQueue(mem());
+  const mv = (id, date) => ({ opId: 'op-' + id, type: 'extra.add', date, extra: { id, date, start: '15:00', end: '16:30', srcDate: '2026-11-05', srcPairId: 'THU-1500' } });
+  q.add(mv('X-one-00001', '2026-11-12'));
+  q.add({ opId: 'op-rm1', type: 'extra.remove', date: '2026-11-12', id: 'X-one-00001', srcDate: '2026-11-05', srcPairId: 'THU-1500' });
+  q.add(mv('X-two-00002', '2026-11-07'));
+  assert.deepEqual(q.takeBatch().map((o) => o.opId), ['op-X-one-00001']);
+  q.remove('op-X-one-00001');
+  assert.deepEqual(q.takeBatch().map((o) => o.opId), ['op-rm1']);
+  q.remove('op-rm1');
+  assert.deepEqual(q.takeBatch().map((o) => o.opId), ['op-X-two-00002']);
+});
+
+test('шаг 6, проверка: ответ сервера не воскрешает пару, удаление которой ждёт в очереди; обратная к удалению — без пустых полей', () => {
+  const q = createQueue(mem());
+  const data = { entries: [], dayNotes: [], rules: [], extras: [] };
+  const add = { opId: 'op-a', type: 'extra.add', date: '2026-11-07', extra: { id: 'X-res-00001', date: '2026-11-07', start: '15:00', end: '16:30', srcDate: '2026-11-05', srcPairId: 'THU-1500' } };
+  applyOp(data, add); q.add(add); q.takeBatch();
+  const rm = { opId: 'op-r', type: 'extra.remove', date: '2026-11-07', id: 'X-res-00001', srcDate: '2026-11-05', srcPairId: 'THU-1500' };
+  applyOp(data, rm); q.add(rm);
+  applyResult(data, q, add, { ok: true, version: 1, extra: { ...add.extra, type: '', subject: '', version: 1 } });
+  assert.equal(data.extras.length, 0);
+  const back = inverseOf({ ...data, extras: [{ ...add.extra, type: '', subject: '', tgName: '', version: 1 }] }, rm);
+  assert.equal('type' in back.extra, false); assert.equal('subject' in back.extra, false);
+  assert.equal(back.extra.srcPairId, 'THU-1500');
 });

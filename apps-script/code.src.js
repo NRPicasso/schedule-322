@@ -198,8 +198,12 @@ function validateOp_(op, pairIds) {
       if (!TIME_RE.test(x.start) || !TIME_RE.test(x.end) || x.end <= x.start) return 'время окончания должно быть позже начала';
       if (x.srcPairId != null && x.srcPairId !== '') {
         if (!has_(pairIds, x.srcPairId) || typeof x.srcDate !== 'string' || !DATE_RE.test(x.srcDate)) return 'неверная исходная пара переноса';
+        // pairIds хранит день недели пары шаблона (0 — вс … 6 — сб): перенести можно только пару, которая в этот день стоит
+        var wd = pairIds[x.srcPairId];
+        if (typeof wd === 'number' && wd === wd && new Date(x.srcDate + 'T12:00:00Z').getUTCDay() !== wd) return 'этой пары нет в исходный день';
+        if (x.subject != null && !str_(x.subject, 100)) return 'название предмета — до 100 знаков';
       } else if (!str_(x.subject, 100) || !x.subject.trim()) return 'укажите название предмета';
-      if (x.type != null && !has_(EXTRA_TYPES, x.type)) return 'неверный тип занятия';
+      if (x.type != null && x.type !== '' && !has_(EXTRA_TYPES, x.type)) return 'неверный тип занятия';
       if (x.slots != null && x.slots !== 1 && x.slots !== 2) return 'неверное число пар';
       var err = validPatch_({ room: x.room || '', teacher: x.teacher || '', hw: x.hw || '', links: x.links || [], noHw: x.noHw === undefined ? false : x.noHw }, ['room', 'teacher', 'hw', 'links', 'noHw']);
       if (err) return err;
@@ -288,8 +292,8 @@ function processOps_(state, ops, pairIds, meta, seen) {
     if (op.type === 'extra.add') {
       var x = op.extra;
       if (findIndex_(state.extras, function (e) { return e.id === x.id; }) >= 0) { fail(op, 'invalid', 'пара с таким номером уже есть'); return; }
-      if (state.extras.filter(function (e) { return e.date === x.date; }).length >= 8) { fail(op, 'invalid', 'не больше 8 дополнительных пар в день'); return; }
-      if (x.srcPairId && findIndex_(state.extras, function (e) { return e.srcDate === x.srcDate && e.srcPairId === x.srcPairId; }) >= 0) { fail(op, 'invalid', 'эта пара уже перенесена — перенесите её ещё раз из новой даты'); return; }
+      if (state.extras.filter(function (e) { return e.date === x.date && !e.cancelled; }).length >= 8) { fail(op, 'invalid', 'не больше 8 дополнительных пар в день'); return; }
+      if (x.srcPairId && findIndex_(state.extras, function (e) { return e.srcDate === x.srcDate && e.srcPairId === x.srcPairId && !e.cancelled; }) >= 0) { fail(op, 'invalid', 'эта пара уже перенесена — перенесите её ещё раз из новой даты'); return; }
       var added = { id: x.id, date: x.date, start: x.start, end: x.end, slots: x.slots || 1, subject: x.subject || '', tgName: x.tgName || '', type: x.type || '',
         room: x.room || '', teacher: x.teacher || '', srcDate: x.srcPairId ? x.srcDate : '', srcPairId: x.srcPairId || '', hw: x.hw || '', links: x.links || [],
         noHw: !!x.noHw && !x.hw && !(x.links || []).length, version: 1, by: meta.name, updatedAt: meta.now };
@@ -308,6 +312,9 @@ function processOps_(state, ops, pairIds, meta, seen) {
     if (xi < 0) { fail(op, 'conflict', '', { current: null }); return; }
     var cur = state.extras[xi];
     if ((cur.version || 0) !== op.baseVersion) { fail(op, 'conflict', '', { current: cur }); return; }
+    if (op.patch.date && op.patch.date !== cur.date && state.extras.filter(function (e) { return e.date === op.patch.date && !e.cancelled; }).length >= 8) {
+      fail(op, 'invalid', 'не больше 8 дополнительных пар в день'); return;
+    }
     var upd = copy_(cur);
     for (var f in op.patch) upd[f] = op.patch[f];
     if (upd.hw || (upd.links && upd.links.length)) upd.noHw = false;
@@ -385,7 +392,7 @@ function handleLocked_(req) {
   var ops = Array.isArray(req.ops) ? req.ops.slice(0, LIMITS.opsPerRequest) : [];
   {
     var pairIds = Object.create(null);
-    rowsToObjects_(readSheet_(SHEETS.template.name), SHEETS.template.cols).forEach(function (t) { pairIds[t.id] = true; });
+    rowsToObjects_(readSheet_(SHEETS.template.name), SHEETS.template.cols).forEach(function (t) { pairIds[t.id] = t.day; }); // день недели — для проверки переноса
     var state = {
       entries: rowsToObjects_(readSheet_(SHEETS.entries.name), SHEETS.entries.cols),
       dayNotes: rowsToObjects_(readSheet_(SHEETS.dayNotes.name), SHEETS.dayNotes.cols),

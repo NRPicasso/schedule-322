@@ -128,3 +128,15 @@ test('после конца семестра шаблон продолжает �
   assert.equal(day.half, 'bottom');
   assert.deepEqual(day.pairs.map((p) => p.subject), ['Муниципальное', 'УПП', 'ТП']);
 });
+
+test('шаг 6, проверка: несогласованное время (правило только на начало) не даёт конец раньше начала', () => {
+  const d = data({ rules: [{ pairId: 'THU-1320', from: '2026-11-05', to: '', field: 'start', value: '15:00' }] });
+  const p = buildDay('2026-11-05', d).pairs.find((x) => x.id === 'THU-1320');
+  assert.equal(p.start, '13:20'); assert.equal(p.end, '14:50');
+});
+
+test('шаг 6, проверка: правило «по дату» перестаёт действовать после даты', () => {
+  const d = data({ rules: [{ pairId: 'THU-1320', from: '2026-11-05', to: '2026-11-12', field: 'room', value: '401' }] });
+  assert.equal(buildDay('2026-11-12', d).pairs.find((x) => x.id === 'THU-1320').room, '401');
+  assert.equal(buildDay('2026-11-19', d).pairs.find((x) => x.id === 'THU-1320').room, '221');
+});

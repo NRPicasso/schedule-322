@@ -230,3 +230,4 @@ a.btn { text-decoration: none; }
 .radio label:has(input:checked) { border-color: var(--accent); background: var(--accent-weak); }
 .ba { display: grid; grid-template-columns: 1fr auto 1fr; gap: var(--sp-2); align-items: center; }
 select.input { appearance: auto; }
+.btn-danger.armed { background: var(--stamp-cancel); color: var(--surface); }

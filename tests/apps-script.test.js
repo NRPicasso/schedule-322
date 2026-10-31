@@ -215,3 +215,16 @@ test('перенос пары с отметкой «ДЗ нет» сохраня
   r = processOps_(s, [xop({ type: 'extra.add', date: '2026-11-07', extra: { ...base, srcPairId: 'THU-1320', id: 'X-nohw-0002', noHw: 'да' } })], pairIds, meta, noSeen).results[0];
   assert.equal(r.error, 'invalid');
 });
+
+test('шаг 6, проверка: перенос с пустым типом (как его хранит сервер) принимается; пары нет в исходный день — отказ; лимит 8 при смене даты', () => {
+  const s = fresh6();
+  const days = { 'THU-1500': 4, 'THU-1320': 4 };
+  let r = processOps_(s, [xop({ type: 'extra.add', date: '2026-11-07', extra: { id: 'X-type-0001', date: '2026-11-07', start: '16:50', end: '18:20', srcDate: '2026-11-05', srcPairId: 'THU-1500', type: '', subject: '' } })], days, meta, noSeen).results[0];
+  assert.equal(r.ok, true);
+  r = processOps_(s, [xop({ type: 'extra.add', date: '2026-11-07', extra: { id: 'X-type-0002', date: '2026-11-07', start: '10:00', end: '11:30', srcDate: '2026-11-06', srcPairId: 'THU-1320' } })], days, meta, noSeen).results[0];
+  assert.match(r.message, /нет в исходный день/);
+  const many = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => xop({ type: 'extra.add', date: '2026-11-08', extra: { id: 'X-full-000' + i, date: '2026-11-08', start: '10:00', end: '11:00', subject: 'Т', type: 'other' } }));
+  processOps_(s, many, days, meta, noSeen);
+  r = processOps_(s, [xop({ type: 'extra.update', date: '2026-11-08', id: 'X-type-0001', baseVersion: 1, patch: { date: '2026-11-08' } })], days, meta, noSeen).results[0];
+  assert.match(r.message, /не больше 8/);
+});

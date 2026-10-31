@@ -66,6 +66,11 @@ function fromTemplate(t, iso, data, entriesByKey) {
   for (const f of CHANGEABLE) {
     if (e[f]) { pair.changed[f] = pair[f]; pair[f] = e[f]; } // разовая замена сильнее правила
   }
+  // защита от несогласованного времени (правило на начало без правила на конец, ручная правка
+  // таблицы): если конец не позже начала — показываем время по шаблону, а не «15:00–13:10»
+  if (toMinutes(pair.end) <= toMinutes(pair.start)) {
+    pair.start = t.start; pair.end = t.end; delete pair.changed.start; delete pair.changed.end;
+  }
   pair.hw = e.hw || '';
   pair.links = e.links || [];
   pair.noHw = !!e.noHw;
