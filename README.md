@@ -6,6 +6,10 @@
 - **Активисты** заполняют неделю на странице «Для активистов» по личному коду. Отсюда же копируют текст для Telegram в привычном оформлении.
 - Данные хранятся в Google Таблице «Расписание 322». Записывает в неё небольшой скрипт Google Apps Script. Сервер и хостинг оплачивать не нужно.
 
+- Сайт группы: https://nrpicasso.github.io/schedule-322/
+- Для активистов: https://nrpicasso.github.io/schedule-322/admin.html
+- Код: https://github.com/NRPicasso/schedule-322 (версия v0.1.0)
+
 Ссылку на сайт рассылаем только внутри группы. Сайт закрыт от поисковиков: на каждой странице стоит `noindex`.
 
 ---
@@ -149,7 +153,7 @@ ROOT=$PWD node tests/e2e/pwa.e2e.cjs
 
 ### Публикация
 
-Сайт выкладывается на GitHub Pages сам: при каждом `git push` в ветку `main` GitHub Actions прогоняет `node --test` и, если всё прошло, публикует папку `site/` (файл `.github/workflows/pages.yml`). Ход выкладки — вкладка **Actions** репозитория; если проверка упала, сайт остаётся прежним.
+Репозиторий https://github.com/NRPicasso/schedule-322, сайт https://nrpicasso.github.io/schedule-322/. Сайт выкладывается на GitHub Pages сам: при каждом `git push` в ветку `main` GitHub Actions прогоняет `node --test` и, если всё прошло, публикует папку `site/` (файл `.github/workflows/pages.yml`). Ход выкладки — вкладка **Actions** репозитория; если проверка упала, сайт остаётся прежним.
 
 Порядок обновления сайта: правка → `node tools/build-sw.mjs` → `node --test` → `git commit` → `git push`.
 
