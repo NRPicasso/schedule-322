@@ -10,6 +10,7 @@ import { applyOp, inverseOf, createQueue, applyResult } from './store.js';
 import { API_URL } from './config.js';
 import { splitPaste, learnTopics, linkInfo, previousHomework, frequentPhrases } from './helpers.js';
 import { weekDays, weekText, weekChanges, pairChanges, TG_LIMIT } from './telegram.js';
+import { registerPWA } from './pwa.js';
 
 const $ = (id) => document.getElementById(id);
 const TYPE = { lecture: 'лекция', seminar: 'семинар', other: 'занятие' };
@@ -99,6 +100,7 @@ function reload() {
       S.fresh = info.source === 'network'; // сохранённая в телефоне копия может быть старой — версии в ней устарели
       // открытый лист Telegram перерисовываем: в нём нет полей ввода, а тексты должны быть свежими
       render({ sheet: sheetBuild === telegramSheet }); flush();
+      if (!S.coachChecked) { S.coachChecked = true; if (!hintsSeen()) startCoach(); } // подсказки — при самом первом входе
     },
     onStatus: (status) => {
       if (!S.data) {
@@ -1089,7 +1091,8 @@ function renderEditor() {
   const sems = weekSeminars(); const done = sems.filter(isDone).length; const allDone = sems.length > 0 && done === sems.length;
   const out = [h('div', { class: 'userline' }, h('span', { class: 'small muted', text: S.name }),
     h('a', { class: 'btn btn-ghost', href: './', text: 'Как видит группа' }),
-    h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => { forgetCode(); S.code = null; S.name = null; renderLogin(); }, text: 'Выйти' }))];
+    h('button', { type: 'button', class: 'icon-btn', id: 'hints', 'aria-label': 'Подсказки', title: 'Подсказки', onclick: startCoach, text: '?' }),
+    h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => { endCoach(false); forgetCode(); S.code = null; S.name = null; renderLogin(); }, text: 'Выйти' }))];
   if (sems.length) {
     out.push(h('section', { class: 'fill' + (allDone ? ' done' : ''), 'aria-label': 'Заполнение ДЗ' },
       h('div', {}, h('h2', { text: allDone ? 'Все семинары заполнены' : `ДЗ: ${done} из ${sems.length} семинаров` }),
@@ -1146,7 +1149,53 @@ function renderBar() {
 function render({ sheet = true } = {}) {
   if (!S.name || !S.data) return;
   renderEditor(); renderBar();
+  if (coachStep >= 0) markCoachTarget(false); // неделя перерисована — вернуть подсветку подсказки
   if (sheet && sheetBuild) renderSheet();
+}
+
+// ---------------- подсказки первого входа (шаг 8) ----------------
+// Три шага поверх недели, не мешают работать: карточка внизу, нужное место подсвечено.
+const HINTS_KEY = 'raspisanie-322:hints-v1';
+const COACH = [
+  { target: () => document.querySelector('.prow:not(.dim)'), title: 'Нажмите на пару',
+    text: 'Откроется карточка: подпись к ДЗ и ссылки, а ниже — изменения в этот день (аудитория, время, перенос, отмена).' },
+  { target: () => document.querySelector('.fill .btn'), title: 'Вставьте ссылку',
+    text: '«Заполнить» проведёт по всем семинарам недели. В Telegram: сообщение → «Копировать ссылку», здесь — кнопка «Вставить ссылку». Тема проверится сама.' },
+  { target: () => $('bar-telegram'), title: 'Скопируйте текст для Telegram',
+    text: 'Когда неделя готова — кнопка «Telegram»: тексты по дням в привычном оформлении, по одному нажатию на день.' },
+];
+let coachStep = -1;
+function hintsSeen() { try { return !local || local.getItem(HINTS_KEY) === '1'; } catch { return true; } }
+function markCoachTarget(scroll) {
+  document.querySelectorAll('.coach-target').forEach((e) => e.classList.remove('coach-target'));
+  const step = COACH[coachStep];
+  const t = step && step.target();
+  if (!t) return;
+  t.classList.add('coach-target');
+  if (scroll) t.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+}
+function startCoach() { coachStep = 0; showCoach(); }
+function endCoach(remember = true) {
+  coachStep = -1;
+  if (remember) { try { if (local) local.setItem(HINTS_KEY, '1'); } catch { /* приватный режим */ } }
+  document.querySelectorAll('.coach-target').forEach((e) => e.classList.remove('coach-target'));
+  const c = $('coach'); if (c) c.remove();
+}
+function showCoach() {
+  const step = COACH[coachStep];
+  if (!step) { endCoach(); return; }
+  markCoachTarget(true);
+  let c = $('coach');
+  if (!c) { c = h('div', { class: 'coach', id: 'coach', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'coach-title' }); document.body.append(c); }
+  const last = coachStep === COACH.length - 1;
+  c.replaceChildren(
+    h('div', { class: 'xs muted', text: `Подсказка ${coachStep + 1} из ${COACH.length}` }),
+    h('b', { id: 'coach-title', text: step.title }),
+    h('p', { class: 'small', style: 'margin:0', text: step.text }),
+    h('div', { class: 'row', style: 'justify-content:flex-end' },
+      last ? null : h('button', { type: 'button', class: 'btn btn-ghost', id: 'coach-skip', onclick: () => endCoach(), text: 'Пропустить' }),
+      h('button', { type: 'button', class: 'btn btn-primary', id: 'coach-next', onclick: () => { coachStep += 1; showCoach(); }, text: last ? 'Понятно' : 'Дальше' })));
+  c.querySelector('#coach-next').focus({ preventScroll: true });
 }
 
 // ---------------- запуск ----------------
@@ -1178,6 +1227,7 @@ async function boot() {
   }
 }
 boot();
+registerPWA({ beforeReload: () => flushText() }); // работа без сети; перед обновлением сайта — сохранить набранное
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { flushText(); return; }               // свернули приложение — сохранить набранное
   if (S.name && !S.queue.size()) reload();

@@ -67,6 +67,8 @@ function makeServer() {
     await page.waitForSelector('.fill');
     assert.match(await page.textContent('.top h1'), /2 ноября — 7 ноября/);
     assert.match(await page.textContent('.fill'), /ДЗ: 0 из 4 семинаров/);
+    await page.waitForSelector('#coach', { timeout: 5000 });                  // подсказки первого входа (подробно — в pwa.e2e.cjs)
+    await page.click('#coach-skip');
   });
 
   await check('мастер: ДЗ, «ДЗ нет», ссылка — всё дошло до сервера и в журнал', async () => {

@@ -6,6 +6,13 @@
   <meta name="robots" content="noindex, nofollow">
   <meta name="color-scheme" content="light dark">
   <title>Расписание 322</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="apple-mobile-web-app-title" content="Расписание">
+  <meta name="theme-color" content="#2a3aa8">
+  <link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="fonts/fonts.css">
   <link rel="stylesheet" href="css/tokens.css">
   <link rel="stylesheet" href="css/style.css">
@@ -15,12 +22,14 @@
   <main class="wrap" id="app" aria-live="polite">
     <div class="stack" aria-hidden="true"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
   </main>
+  <div class="wrap" id="install"></div>
   <noscript><p class="wrap">Для расписания нужен включённый JavaScript.</p></noscript>
   <script type="module">
     import { createGroupView } from './src/view.js';
     import { moscowNow, parseNowOverride } from './src/time.js';
     import { loadSchedule } from './src/api.js';
     import { API_URL } from './src/config.js';
+    import { registerPWA, installHint } from './src/pwa.js';
 
     const app = document.getElementById('app');
     const view = createGroupView({ top: document.getElementById('top'), app });
@@ -58,6 +67,8 @@
     }
 
     refresh();
+    registerPWA();                                      // работа без сети и «Сайт обновился»
+    installHint(document.getElementById('install'));   // «открывать как приложение» — с 3-го посещения
     setInterval(() => view.show(clock()), 60 * 1000);   // «идёт сейчас» обновляется каждую минуту
     setInterval(refresh, 5 * 60 * 1000);                // свежие данные — раз в 5 минут
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
