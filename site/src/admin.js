@@ -1092,7 +1092,7 @@ function renderEditor() {
   const out = [h('div', { class: 'userline' }, h('span', { class: 'small muted', text: S.name }),
     h('a', { class: 'btn btn-ghost', href: './', text: 'Как видит группа' }),
     h('button', { type: 'button', class: 'icon-btn', id: 'hints', 'aria-label': 'Подсказки', title: 'Подсказки', onclick: startCoach, text: '?' }),
-    h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => { endCoach(false); forgetCode(); S.code = null; S.name = null; renderLogin(); }, text: 'Выйти' }))];
+    h('button', { type: 'button', class: 'btn btn-ghost', id: 'logout', onclick: logout, text: 'Выйти' }))];
   if (sems.length) {
     out.push(h('section', { class: 'fill' + (allDone ? ' done' : ''), 'aria-label': 'Заполнение ДЗ' },
       h('div', {}, h('h2', { text: allDone ? 'Все семинары заполнены' : `ДЗ: ${done} из ${sems.length} семинаров` }),
@@ -1100,8 +1100,8 @@ function renderEditor() {
       allDone
         ? h('div', { class: 'fill-acts' },
           h('button', { type: 'button', class: 'btn', id: 'fill-telegram', onclick: (e) => openTelegram(e.currentTarget, 'days'), text: 'Telegram' }),
-          h('button', { type: 'button', class: 'btn btn-ghost', onclick: (e) => openWizard(e.currentTarget), text: 'Проверить' }))
-        : h('button', { type: 'button', class: 'btn', onclick: (e) => openWizard(e.currentTarget), text: 'Заполнить' }),
+          h('button', { type: 'button', class: 'btn btn-ghost', id: 'fill-wizard', onclick: (e) => openWizard(e.currentTarget), text: 'Проверить' }))
+        : h('button', { type: 'button', class: 'btn', id: 'fill-wizard', onclick: (e) => openWizard(e.currentTarget), text: 'Заполнить' }),
       h('div', { class: 'meter', 'aria-hidden': 'true' }, sems.map((p) => h('i', { class: isDone(p) ? 'on' : '' })))));
   } else {
     out.push(h('div', { class: 'empty' }, h('b', { text: 'На этой неделе семинаров нет' }), h('span', { class: 'muted', text: 'Можно добавить пометки дня.' })));
@@ -1146,6 +1146,25 @@ function renderBar() {
     h('button', { type: 'button', class: 'btn btn-primary', id: 'bar-telegram', onclick: (e) => openTelegram(e.currentTarget), text: 'Telegram' })));
 }
 
+/**
+ * Выход с телефона. Неотправленные правки принадлежат тому, кто их сделал: если выйти,
+ * они не должны уйти под кодом следующего человека — поэтому предупреждаем и удаляем их.
+ */
+function logout() {
+  const done = () => { endCoach(false); S.queue.clear(); forgetCode(); S.code = null; S.name = null; S.status = 'idle'; renderLogin(); };
+  const n = S.queue.size();
+  if (!n) { done(); return; }
+  queueDialog(() => {
+    $('dialog').replaceChildren(h('div', { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'lo-title', 'aria-describedby': 'lo-text' }, h('div', { class: 'box' },
+      h('h2', { id: 'lo-title', text: 'Есть неотправленные правки' }),
+      h('p', { id: 'lo-text', style: 'margin:0', text: `На телефоне ждут отправки изменений: ${n}. Если выйти сейчас, они будут удалены. Лучше дождаться сети и «Сохранено».` }),
+      h('div', { class: 'cols' },
+        h('button', { type: 'button', class: 'btn btn-primary', id: 'lo-stay', onclick: closeDialog, text: 'Остаться' }),
+        h('button', { type: 'button', class: 'btn btn-danger', id: 'lo-go', onclick: () => { closeDialog(); done(); }, text: 'Выйти и удалить' })))));
+    $('lo-stay').focus();
+  });
+}
+
 function render({ sheet = true } = {}) {
   if (!S.name || !S.data) return;
   renderEditor(); renderBar();
@@ -1159,13 +1178,15 @@ const HINTS_KEY = 'raspisanie-322:hints-v1';
 const COACH = [
   { target: () => document.querySelector('.prow:not(.dim)'), title: 'Нажмите на пару',
     text: 'Откроется карточка: подпись к ДЗ и ссылки, а ниже — изменения в этот день (аудитория, время, перенос, отмена).' },
-  { target: () => document.querySelector('.fill .btn'), title: 'Вставьте ссылку',
+  { target: () => $('fill-wizard'), title: 'Вставьте ссылку',
     text: '«Заполнить» проведёт по всем семинарам недели. В Telegram: сообщение → «Копировать ссылку», здесь — кнопка «Вставить ссылку». Тема проверится сама.' },
   { target: () => $('bar-telegram'), title: 'Скопируйте текст для Telegram',
     text: 'Когда неделя готова — кнопка «Telegram»: тексты по дням в привычном оформлении, по одному нажатию на день.' },
 ];
 let coachStep = -1;
 function hintsSeen() { try { return !local || local.getItem(HINTS_KEY) === '1'; } catch { return true; } }
+/** Шаг без цели на экране (неделя без пар или без семинаров) пропускаем — не подсвечиваем пустоту. */
+function coachAvailable(i) { return !!(COACH[i] && COACH[i].target()); }
 function markCoachTarget(scroll) {
   document.querySelectorAll('.coach-target').forEach((e) => e.classList.remove('coach-target'));
   const step = COACH[coachStep];
@@ -1175,27 +1196,34 @@ function markCoachTarget(scroll) {
   if (scroll) t.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
 }
 function startCoach() { coachStep = 0; showCoach(); }
+// Escape закрывает подсказки (если не открыт нижний лист — тогда Escape закрывает его)
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && coachStep >= 0 && !sheetBuild) endCoach(); });
 function endCoach(remember = true) {
   coachStep = -1;
   if (remember) { try { if (local) local.setItem(HINTS_KEY, '1'); } catch { /* приватный режим */ } }
   document.querySelectorAll('.coach-target').forEach((e) => e.classList.remove('coach-target'));
   const c = $('coach'); if (c) c.remove();
+  document.body.style.paddingBottom = '';
 }
 function showCoach() {
+  while (coachStep < COACH.length && !coachAvailable(coachStep)) coachStep += 1;
   const step = COACH[coachStep];
   if (!step) { endCoach(); return; }
   markCoachTarget(true);
   let c = $('coach');
-  if (!c) { c = h('div', { class: 'coach', id: 'coach', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'coach-title' }); document.body.append(c); }
-  const last = coachStep === COACH.length - 1;
+  if (!c) { c = h('div', { class: 'coach', id: 'coach', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'coach-title', 'aria-describedby': 'coach-text' }); document.body.append(c); }
+  const rest = COACH.map((_, i) => i).filter((i) => coachAvailable(i));
+  const last = coachStep === rest[rest.length - 1];
   c.replaceChildren(
-    h('div', { class: 'xs muted', text: `Подсказка ${coachStep + 1} из ${COACH.length}` }),
+    h('div', { class: 'xs muted', text: `Подсказка ${rest.indexOf(coachStep) + 1} из ${rest.length}` }),
     h('b', { id: 'coach-title', text: step.title }),
-    h('p', { class: 'small', style: 'margin:0', text: step.text }),
+    h('p', { class: 'small', id: 'coach-text', style: 'margin:0', text: step.text }),
     h('div', { class: 'row', style: 'justify-content:flex-end' },
       last ? null : h('button', { type: 'button', class: 'btn btn-ghost', id: 'coach-skip', onclick: () => endCoach(), text: 'Пропустить' }),
       h('button', { type: 'button', class: 'btn btn-primary', id: 'coach-next', onclick: () => { coachStep += 1; showCoach(); }, text: last ? 'Понятно' : 'Дальше' })));
   c.querySelector('#coach-next').focus({ preventScroll: true });
+  // низ недели не должен навсегда прятаться под карточкой: добавляем место под её высоту
+  document.body.style.paddingBottom = `${c.offsetHeight + 110}px`;
 }
 
 // ---------------- запуск ----------------

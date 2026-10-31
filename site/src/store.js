@@ -189,6 +189,9 @@ export function createQueue(storage) {
     release(opIds) { items.forEach((i) => { if (opIds.includes(i.opId)) i.inFlight = false; }); persist(); },
     remove(opId) { removed.add(opId); items = items.filter((i) => i.opId !== opId); persist(); },
 
+    /** Очистить очередь целиком (выход с телефона: чужие правки не должны уйти под следующим кодом). */
+    clear() { items.forEach((i) => removed.add(i.opId)); items = []; try { storage.setItem(QUEUE_KEY, '[]'); } catch { /* ок */ } },
+
     /** Убрать и вернуть все ожидающие операции объекта (нужно при конфликте). */
     takePendingFor(op) {
       const out = items.filter((i) => !i.inFlight && sameKey(i, op));

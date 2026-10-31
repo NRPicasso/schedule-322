@@ -20,10 +20,12 @@ function walk(dir) {
 /** Текст sw.js для текущих файлов сайта (его же проверяет тест). */
 export function swSource() {
   const files = walk(SITE).map((f) => relative(SITE, f).split(sep).join('/')).filter((f) => !SKIP.some((re) => re.test(f))).sort();
+  const template = readFileSync(join(ROOT, 'tools', 'sw.template.js'), 'utf8');
+  // версия меняется от любого файла сайта и от самой схемы работы (шаблона)
   const hash = createHash('sha256');
+  hash.update(template);
   for (const f of files) { hash.update(f); hash.update(readFileSync(join(SITE, f))); }
   const version = hash.digest('hex').slice(0, 12);
-  const template = readFileSync(join(ROOT, 'tools', 'sw.template.js'), 'utf8');
   return template.replace('__VERSION__', version).replace('__PRECACHE__', JSON.stringify(['./', ...files], null, 2));
 }
 

@@ -1,7 +1,10 @@
 {
   "name": "raspisanie-322",
   "private": true,
+  "description": "Расписание, аудитории и ДЗ группы 322: сайт без сборки + Google Apps Script",
   "type": "module",
-  "description": "Расписание группы 322: сайт для группы и редактор для активистов",
-  "scripts": { "test": "node --test" }
+  "scripts": {
+    "test": "node --test",
+    "build": "node tools/build-gs.mjs && node tools/build-sw.mjs"
+  }
 }

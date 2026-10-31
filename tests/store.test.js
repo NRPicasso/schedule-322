@@ -210,3 +210,12 @@ test('шаг 6, проверка: ответ сервера не воскреш�
   assert.equal('type' in back.extra, false); assert.equal('subject' in back.extra, false);
   assert.equal(back.extra.srcPairId, 'THU-1500');
 });
+
+test('проверка шага 8: clear() очищает очередь и в хранилище (выход с телефона)', () => {
+  const st = mem();
+  const q = createQueue(st);
+  q.add({ opId: 'op-c1', type: 'note.add', date: '2026-11-05', text: 'Сменка' });
+  q.clear();
+  assert.equal(q.size(), 0);
+  assert.equal(createQueue(st).size(), 0);
+});

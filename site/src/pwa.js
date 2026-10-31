@@ -15,27 +15,44 @@ function el(tag, attrs = {}, ...kids) {
 }
 
 /**
- * Подключить работу без сети. Когда на сайте вышла новая версия, сверху появляется
- * «Сайт обновился · Обновить» — перезагрузка только по нажатию (beforeReload — сохранить набранное).
+ * Подключить работу без сети. Когда на сайте вышла новая версия, внизу появляется
+ * «Сайт обновился · Обновить · Позже» — перезагрузка только по нажатию (beforeReload — сохранить набранное).
  */
 export function registerPWA({ beforeReload } = {}) {
   if (!('serviceWorker' in navigator)) return;
   let accepted = false;
-  const offer = (worker) => {
-    if (document.getElementById('sw-update')) return;
-    const bar = el('div', { class: 'toast', id: 'sw-update', role: 'status' }, el('span', { text: 'Сайт обновился' }),
-      el('button', { type: 'button', text: 'Обновить', onclick: () => { accepted = true; if (beforeReload) beforeReload(); worker.postMessage('skip-waiting'); } }));
-    document.body.append(bar);
+  let reg = null;
+  const hadController = !!navigator.serviceWorker.controller; // нет — это самая первая установка, не обновление
+  const notice = (text, label, action) => {
+    let bar = document.getElementById('sw-update');
+    if (!bar) { bar = el('div', { class: 'sw-update', id: 'sw-update', role: 'status' }); document.body.append(bar); }
+    bar.hidden = false;
+    bar.replaceChildren(el('span', { text }),
+      el('button', { type: 'button', class: 'go', text: label, onclick: action }),
+      el('button', { type: 'button', class: 'later', text: 'Позже', onclick: () => { bar.hidden = true; } }));
   };
-  navigator.serviceWorker.register('sw.js').then((reg) => {
-    if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
-    reg.addEventListener('updatefound', () => {
-      const w = reg.installing;
-      if (w) w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); });
+  const apply = () => {
+    if (beforeReload) beforeReload();
+    // берём ту версию, что ждёт СЕЙЧАС: пока плашка висела, могла выйти ещё одна или её включила другая вкладка
+    const w = reg && reg.waiting;
+    if (!w) { location.reload(); return; }
+    accepted = true;
+    w.postMessage('skip-waiting');
+  };
+  const offer = () => notice('Сайт обновился', 'Обновить', apply);
+  navigator.serviceWorker.register('sw.js').then((r) => {
+    reg = r;
+    if (r.waiting && navigator.serviceWorker.controller) offer();
+    r.addEventListener('updatefound', () => {
+      const w = r.installing;
+      if (w) w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(); });
     });
   }).catch(() => { /* без service worker сайт работает как обычно, просто не офлайн */ });
-  // перезагружаемся только после «Обновить» (при самой первой установке страница не мигает)
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (accepted) { accepted = false; location.reload(); } });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (accepted) { accepted = false; location.reload(); return; }
+    // новую версию включили в другой вкладке: здесь ещё старая страница — предлагаем перезагрузить
+    if (hadController) notice('Сайт обновился', 'Перезагрузить', () => { if (beforeReload) beforeReload(); location.reload(); });
+  });
 }
 
 const standalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -49,8 +66,8 @@ export function installHint(container) {
   if (!container || standalone() || get(DISMISS_KEY)) return;
   const visits = Number(get(VISITS_KEY) || 0) + 1;
   set(VISITS_KEY, String(visits));
+  if (visits < 3) return; // первые два раза не вмешиваемся: браузер может показать своё предложение установки
   const show = (body) => {
-    if (visits < 3) return;
     const close = el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Закрыть подсказку', text: '✕', onclick: () => { set(DISMISS_KEY, '1'); container.replaceChildren(); } });
     container.replaceChildren(el('div', { class: 'install' }, el('div', { class: 'install-body' }, el('b', { text: 'Открывать как приложение' }), body), close));
   };

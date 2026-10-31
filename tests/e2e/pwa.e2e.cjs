@@ -21,6 +21,8 @@ let down = false;
 const server = http.createServer((req, res) => {
   if (down) { req.socket.destroy(); return; }
   let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (!p.startsWith('/repo/')) { res.writeHead(404); res.end(); return; }      // как GitHub Pages: сайт в подпапке
+  p = p.slice('/repo'.length);
   if (p.endsWith('/')) p += 'index.html';
   const f = path.join(DIR, p);
   if (!f.startsWith(DIR) || !fs.existsSync(f)) { res.writeHead(404); res.end(); return; }
@@ -30,7 +32,7 @@ const server = http.createServer((req, res) => {
 
 (async () => {
   await new Promise((r) => server.listen(0, r));
-  const SITE = `http://localhost:${server.address().port}`;
+  const SITE = `http://localhost:${server.address().port}/repo`;
   const browser = await chromium.launch();
   const results = [];
   const check = async (name, fn) => { try { await fn(); results.push('OK   ' + name); } catch (e) { results.push('FAIL ' + name + ' — ' + e.message.split('\n')[0]); } };
@@ -89,6 +91,8 @@ const server = http.createServer((req, res) => {
     assert.match(await page.textContent('#coach'), /Подсказка 1 из 3/);
     await page.click('#coach-skip');
     assert.equal(await page.locator('#coach').count(), 0);
+    await page.click('#hints'); await page.keyboard.press('Escape');            // Escape тоже закрывает
+    assert.equal(await page.locator('#coach').count(), 0);
   });
 
   await check('редактор без сети открывается с сохранённой неделей; правка ждёт сети и уходит', async () => {
@@ -103,6 +107,7 @@ const server = http.createServer((req, res) => {
     let posted = null;
     await ctx.unroute(API);
     await ctx.route(API, (route) => {
+      if (offline) return route.abort('internetdisconnected');
       if (route.request().method() === 'POST') { const b = JSON.parse(route.request().postData()); if (b.ops) posted = b.ops; return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, name: 'Активист 1', results: (b.ops || []).map((o) => ({ opId: o.opId, ok: true })) }) }); }
       return route.fulfill({ status: 200, contentType: 'application/json', body: PAYLOAD });
     });
@@ -112,20 +117,59 @@ const server = http.createServer((req, res) => {
     assert.ok(posted && posted.some((o) => o.type === 'note.add' && o.text === 'Контрольная'));
   });
 
-  await check('вышла новая версия сайта — «Сайт обновился · Обновить», после нажатия работает новая версия', async () => {
-    const before = await page.evaluate(async () => (await caches.keys()).join());
+  await check('«Выйти» с неотправленными правками — предупреждение; «Выйти и удалить» очищает очередь', async () => {
+    offline = true; await ctx.setOffline(true); down = true;
+    await page.click('#day-2026-11-05 button:has-text("+ пометка")');
+    await page.click('#sheet .chip:has-text("Принести кодекс")');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await page.click('#logout');
+    assert.match(await page.textContent('.dialog'), /ждут отправки изменений: 1/);
+    await page.click('#lo-stay');
+    assert.equal(await page.locator('.fill').count(), 1);                      // остались в редакторе
+    await page.click('#logout'); await page.click('#lo-go');
+    await page.waitForSelector('#code');
+    assert.equal(await page.evaluate(() => localStorage.getItem('raspisanie-322:queue:v1')), '[]');
+    offline = false; await ctx.setOffline(false); down = false;
+    await page.fill('#code', '123456'); await page.click('button[type=submit]'); await page.waitForSelector('.fill');
+  });
+
+  const online = async () => { down = false; offline = false; await ctx.setOffline(false); }; // если проверка выше упала посередине
+  await check('новая версия сайта: до «Обновить» работает старая целиком (без смешения), плашка внизу не закрывает «Отменить»; «Позже»; вторая вкладка', async () => {
+    await online();
+    if (!(await page.locator('.fill').count())) { await page.goto(SITE + '/admin.html'); await page.waitForSelector('.fill'); }
+    // выкладываем версию, где страница редактора импортирует новый экспорт модуля, — смешение старого и нового сломало бы страницу
+    fs.appendFileSync(path.join(DIR, 'src', 'time.js'), "\nexport const NEW_THING = 'новая версия';\n");
+    const html = path.join(DIR, 'admin.html');
+    fs.writeFileSync(html, fs.readFileSync(html, 'utf8').replace('<script type="module" src="src/admin.js"></script>',
+      '<script type="module" src="src/admin.js"></script>\n  <script type="module">import { NEW_THING } from \'./src/time.js\'; document.documentElement.dataset.version = NEW_THING;</script>'));
     const sw = path.join(DIR, 'sw.js');
     fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace(/const VERSION = '(\w+)'/, "const VERSION = 'test-new-version'"));
+    const page2 = await ctx.newPage(); await page2.goto(SITE + '/admin.html'); await page2.waitForSelector('.fill');
+    await page.reload(); await page.waitForSelector('.fill');                    // сервер уже новый, но телефон — на старой версии целиком
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.version || null), null);
     await page.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); await r.update(); });
-    await page.waitForSelector('#sw-update', { timeout: 15000 });
+    await page.waitForSelector('#sw-update:not([hidden])', { timeout: 15000 });
     assert.match(await page.textContent('#sw-update'), /Сайт обновился/);
-    await Promise.all([page.waitForEvent('load'), page.click('#sw-update button')]);
-    await page.waitForSelector('.fill');
-    const after = await page.evaluate(async () => (await caches.keys()).join());
-    assert.notEqual(after, before); assert.match(after, /test-new-version/);
+    // плашка «Отменить» (вверху) и плашка обновления (внизу, над панелью) не перекрываются
+    await page.click('#day-2026-11-04 button:has-text("+ пометка")'); await page.click('#sheet .chip:has-text("Полная посещаемость")');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    const [t, u] = await Promise.all(['#toast', '#sw-update'].map((sel) => page.locator(sel).boundingBox()));
+    assert.ok(t && u && t.y + t.height <= u.y, `плашки перекрываются: ${JSON.stringify([t, u])}`);
+    await page.click('#sw-update .later');
+    assert.equal(await page.locator('#sw-update').isVisible(), false);
+    await page2.waitForSelector('#sw-update:not([hidden])', { timeout: 15000 });
+    await Promise.all([page2.waitForEvent('load'), page2.click('#sw-update .go')]);   // включили во второй вкладке
+    await page2.waitForFunction(() => document.documentElement.dataset.version === 'новая версия');
+    await page.waitForSelector('#sw-update:not([hidden])', { timeout: 15000 });      // первая вкладка узнала и предлагает перезагрузить
+    assert.match(await page.textContent('#sw-update .go'), /Перезагрузить/);
+    await Promise.all([page.waitForEvent('load'), page.click('#sw-update .go')]);
+    await page.waitForFunction(() => document.documentElement.dataset.version === 'новая версия');
+    assert.match(await page.evaluate(async () => (await caches.keys()).join()), /test-new-version/);
+    await page2.close();
   });
 
   await check('подсказка «открывать как приложение» на iPhone — с 3-го посещения, закрывается навсегда', async () => {
+    await online();
     const ios = await browser.newContext({ ...devices['iPhone 13'] });
     await ios.route(API, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: PAYLOAD }));
     const p = await ios.newPage();
