@@ -228,3 +228,24 @@ test('шаг 6, проверка: перенос с пустым типом (к�
   r = processOps_(s, [xop({ type: 'extra.update', date: '2026-11-08', id: 'X-type-0001', baseVersion: 1, patch: { date: '2026-11-08' } })], days, meta, noSeen).results[0];
   assert.match(r.message, /не больше 8/);
 });
+
+vm.runInContext('this.k = { nextLock_, lockedMessage_, replaceCodeFor_, removeCodesFor_, activistNames_ };', ctx);
+const { nextLock_, lockedMessage_, replaceCodeFor_, removeCodesFor_, activistNames_ } = ctx.k;
+
+test('проверка: пауза после перебора растёт 10 → 20 → 40 мин … до 6 часов; сутки без пауз — снова 10 минут', () => {
+  const t = Date.parse('2026-11-01T12:00:00Z');
+  let prev = null; const mins = [];
+  for (let i = 0; i < 8; i++) { const l = nextLock_(prev, t + i * 1000); mins.push(l.seconds / 60); prev = { n: l.n, at: t + i * 1000 }; }
+  assert.deepEqual(mins, [10, 20, 40, 80, 160, 320, 360, 360]);
+  assert.equal(nextLock_({ n: 5, at: t }, t + 86400000 + 1).seconds, 600);
+  assert.match(lockedMessage_(t + 25 * 60000, t), /примерно на 25 мин/);
+  assert.match(lockedMessage_(t + 5 * 3600000, t), /примерно на 5 ч/);
+});
+
+test('проверка: замена кода одного активиста не трогает остальных; имена — только из свойств скрипта', () => {
+  const codes = { h1: 'Активист 1', h2: 'Активист 2', h3: 'Проверка' };
+  assert.deepEqual({ ...replaceCodeFor_(codes, 'Активист 1', 'hNew') }, { h2: 'Активист 2', h3: 'Проверка', hNew: 'Активист 1' });
+  assert.deepEqual({ ...removeCodesFor_(codes, 'Активист 2') }, { h1: 'Активист 1', h3: 'Проверка' });
+  assert.deepEqual([...activistNames_({ ...codes, h4: 'Активист 1' })], ['Активист 1', 'Активист 2']);
+  assert.ok(!/ACTIVISTS\s*=/.test(code), 'список имён не должен лежать в коде');
+});

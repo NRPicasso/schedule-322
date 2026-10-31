@@ -79,7 +79,7 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .gc.now { background: var(--now); border-color: color-mix(in srgb, var(--warn-text) 40%, transparent); }
 .gc.now::before { background: var(--ink); border-color: var(--ink); }
 .gc .head { display: flex; gap: 10px; align-items: center; min-width: 0; }
-.gc .name { font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+.gc .name { font-weight: 700; min-width: 0; overflow-wrap: break-word; hyphens: auto; } /* «Муници-пальное», а не «Муниципал|ьное» */
 .gc .sub { grid-column: 1 / -1; font-size: var(--fs-s); color: var(--ink-2); }
 .gc .room { font-family: var(--f-mono); font-size: 1.35rem; font-weight: 700; text-align: right; line-height: 1; overflow-wrap: anywhere; }
 .gc .room small { display: block; font-family: var(--f-body); font-size: .68rem; font-weight: 600; color: var(--ink-2); }
@@ -255,3 +255,4 @@ select.input { appearance: auto; }
 .sw-update[hidden] { display: none; }
 body.has-bar .sw-update { bottom: calc(76px + env(safe-area-inset-bottom, 0px)); } /* над нижней панелью редактора, не на «Отменить» вверху */
 body:has(#coach) .sw-update { display: none; }                                       /* пока открыты подсказки — не перекрываем их */
+@media (max-width: 359px) { .userline { flex-wrap: wrap; } .userline > span { flex-basis: 100%; } } /* имя активиста — своей строкой, а не одной буквой */

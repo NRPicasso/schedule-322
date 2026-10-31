@@ -71,7 +71,7 @@
     registerPWA();                                      // работа без сети и «Сайт обновился»
     installHint(document.getElementById('install'));   // «открывать как приложение» — с 3-го посещения
     setInterval(() => view.show(clock()), 60 * 1000);   // «идёт сейчас» обновляется каждую минуту
-    setInterval(refresh, 5 * 60 * 1000);                // свежие данные — раз в 5 минут
+    setInterval(refresh, 4 * 60 * 1000);                // свежие данные — раз в 4 минуты (+ до 1 мин кэша сервера = не позже 5 мин)
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   </script>
 </body>

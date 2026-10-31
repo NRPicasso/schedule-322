@@ -125,10 +125,12 @@ function doGet() {
 var CODES_PROP = 'CODES';          // Script Properties: {sha256(код): имя}
 var FAIL_KEY = 'login-fails';
 var LOCK_KEY = 'login-locked';
-var MAX_FAILS = 10;                // 10 неверных кодов подряд …
-var LOCK_SECONDS = 600;            // … — пауза 10 минут для всех (IP в Apps Script не виден)
+var MAX_FAILS = 10;                // 10 неверных кодов …
+var LOCK_SECONDS = 600;            // … — пауза для всех (IP в Apps Script не виден): 10 минут,
+var LOCK_MAX_SECONDS = 21600;      // при повторах — 20, 40, 80 … минут, но не больше 6 часов
+var LOCK_LEVEL_PROP = 'LOCK_LEVEL'; // Script Properties: {n: номер паузы подряд, at: когда началась}
+var DAY_MS = 86400000;
 var LIMITS = { hw: 5000, link: 500, links: 10, note: 200, notesPerDay: 10, opsPerRequest: 50 };
-var ACTIVISTS = ['Активист 1', 'Активист 2', 'Еремей'];
 var DATE_RE = /^20\d\d-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 function json_(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
@@ -379,12 +381,21 @@ function handleRequest_(req) {
 
 function handleLocked_(req) {
   var cache = CacheService.getScriptCache();
-  if (cache.get(LOCK_KEY)) return { ok: false, error: 'locked', message: 'Слишком много неверных попыток. Попробуйте через 10 минут или напишите Еремею.' };
+  var lockedUntil = cache.get(LOCK_KEY);
+  if (lockedUntil) return { ok: false, error: 'locked', message: lockedMessage_(Number(lockedUntil) || Date.now() + LOCK_SECONDS * 1000, Date.now()) };
   var codes = JSON.parse(PropertiesService.getScriptProperties().getProperty(CODES_PROP) || '{}');
   var name = codes[hashCode_(req && req.code)];
   if (!name) {
     var fails = Number(cache.get(FAIL_KEY) || 0) + 1;
-    if (fails >= MAX_FAILS) { cache.put(LOCK_KEY, '1', LOCK_SECONDS); cache.remove(FAIL_KEY); }
+    if (fails >= MAX_FAILS) {
+      var props = PropertiesService.getScriptProperties();
+      var prev = null;
+      try { prev = JSON.parse(props.getProperty(LOCK_LEVEL_PROP) || 'null'); } catch (e) { prev = null; }
+      var lock = nextLock_(prev, Date.now());
+      cache.put(LOCK_KEY, String(Date.now() + lock.seconds * 1000), lock.seconds);
+      props.setProperty(LOCK_LEVEL_PROP, JSON.stringify({ n: lock.n, at: Date.now() }));
+      cache.remove(FAIL_KEY);
+    }
     else cache.put(FAIL_KEY, String(fails), LOCK_SECONDS);
     return { ok: false, error: 'bad-code', message: 'Код не подошёл. Проверьте цифры.' };
   }
@@ -436,6 +447,44 @@ function doPost(e) {
   catch (err) { return json_({ ok: false, error: 'server', message: 'Сервер занят или произошла ошибка. Изменение сохранено на телефоне и будет отправлено позже.' }); }
 }
 
+/**
+ * Длина следующей паузы. Каждая новая пауза в течение суток после предыдущей — вдвое длиннее
+ * (10 → 20 → 40 мин … до 6 часов); сутки без пауз — снова 10 минут.
+ * Так перебор кода замедляется с ~1440 до ~40 попыток в сутки.
+ */
+function nextLock_(prev, nowMs) {
+  var n = prev && typeof prev.n === 'number' && nowMs - prev.at < DAY_MS ? prev.n + 1 : 1;
+  return { n: n, seconds: Math.min(LOCK_SECONDS * Math.pow(2, n - 1), LOCK_MAX_SECONDS) };
+}
+function lockedMessage_(untilMs, nowMs) {
+  var min = Math.max(1, Math.ceil((untilMs - nowMs) / 60000));
+  var when = min >= 60 ? Math.ceil(min / 60) + ' ч' : min + ' мин';
+  return 'Слишком много неверных попыток. Вход и сохранение закрыты ещё примерно на ' + when + '. Правки не пропадут — они ждут на телефоне. Если это не вы ошибались, напишите Еремею.';
+}
+/**
+ * Имена активистов в коде не хранятся (репозиторий открытый): они есть только в свойствах
+ * скрипта — рядом с отпечатками кодов {отпечаток: имя}. Отсюда же берётся список.
+ */
+var TEST_NAME = 'Проверка';
+function activistNames_(codes) {
+  var seen = {}, out = [];
+  Object.keys(codes).forEach(function (h) { var n = codes[h]; if (n !== TEST_NAME && !seen[n]) { seen[n] = true; out.push(n); } });
+  return out;
+}
+function readCodes_() { return JSON.parse(PropertiesService.getScriptProperties().getProperty(CODES_PROP) || '{}'); }
+/** Убрать человека: все его коды перестают работать. */
+function removeCodesFor_(codes, name) {
+  var out = {};
+  Object.keys(codes).forEach(function (h) { if (codes[h] !== name) out[h] = codes[h]; });
+  return out;
+}
+/** Заменить код одного человека: его старые коды удаляются, остальные не трогаются. */
+function replaceCodeFor_(codes, name, newHash) {
+  var out = removeCodesFor_(codes, name);
+  out[newHash] = name;
+  return out;
+}
+
 /** 6 цифр из случайного UUID (Utilities.getUuid надёжнее Math.random). */
 function randomCode_() {
   return String(100000 + parseInt(Utilities.getUuid().replace(/-/g, '').slice(0, 12), 16) % 900000);
@@ -446,27 +495,86 @@ function createTestCode() {
   var props = PropertiesService.getScriptProperties();
   var codes = JSON.parse(props.getProperty(CODES_PROP) || '{}');
   var code = randomCode_();
-  codes[hashCode_(code)] = 'Проверка';
+  codes[hashCode_(code)] = TEST_NAME;
   props.setProperty(CODES_PROP, JSON.stringify(codes));
   Logger.log('Тестовый код: ' + code);
 }
 function removeTestCode() {
   var props = PropertiesService.getScriptProperties();
   var codes = JSON.parse(props.getProperty(CODES_PROP) || '{}');
-  Object.keys(codes).forEach(function (h) { if (codes[h] === 'Проверка') delete codes[h]; });
+  Object.keys(codes).forEach(function (h) { if (codes[h] === TEST_NAME) delete codes[h]; });
   props.setProperty(CODES_PROP, JSON.stringify(codes));
   Logger.log('Тестовый код удалён');
 }
 
-/** Владелец запускает вручную: выдаёт новые коды активистам (старые перестают работать) и пишет их в журнал выполнения. */
-function createActivistCodes() {
+// ---------- меню владельца в таблице ----------
+// Таблица → меню «Расписание 322». Коды показываются только тому, кто нажал (владельцу таблицы).
+
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Расписание 322')
+    .addItem('Новый код для активиста…', 'menuNewCode')
+    .addItem('Убрать активиста…', 'menuRemove')
+    .addItem('Новые коды всем активистам…', 'menuAllCodes')
+    .addToUi();
+}
+function saveCodes_(update) {
+  var lock = LockService.getScriptLock(); lock.waitLock(20000);
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var codes = JSON.parse(props.getProperty(CODES_PROP) || '{}');
+    props.setProperty(CODES_PROP, JSON.stringify(update(codes)));
+  } finally { lock.releaseLock(); }
+}
+function askName_(ui, title, text) {
+  var r = ui.prompt(title, text, ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return null;
+  var name = r.getResponseText().trim();
+  if (!name || name.length > 40 || name === TEST_NAME) { ui.alert('Имя — от 1 до 40 знаков (и не «' + TEST_NAME + '»).'); return null; }
+  var known = activistNames_(readCodes_()).filter(function (n) { return n.toLowerCase() === name.toLowerCase(); })[0];
+  return known || name;
+}
+function menuNewCode() {
+  var ui = SpreadsheetApp.getUi();
+  var names = activistNames_(readCodes_());
+  var name = askName_(ui, 'Новый код', (names.length ? 'Сейчас активисты: ' + names.join(', ') + '.\n' : '') +
+    'Впишите имя: для кого-то из списка — его старый код перестанет работать; новое имя — добавится активист. Коды остальных не изменятся.');
+  if (!name) return;
+  if (names.indexOf(name) < 0 && ui.alert('Новый активист', 'Добавить активиста «' + name + '»? Это имя будет видно в журнале и в редакторе.', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  var code = randomCode_();
+  saveCodes_(function (codes) { return replaceCodeFor_(codes, name, hashCode_(code)); });
+  ui.alert('Код для «' + name + '»: ' + code + '\n\nПередайте лично; код больше нигде не сохраняется (в таблице — только его отпечаток).');
+}
+function menuRemove() {
+  var ui = SpreadsheetApp.getUi();
+  var names = activistNames_(readCodes_());
+  if (!names.length) { ui.alert('Активистов пока нет.'); return; }
+  var name = askName_(ui, 'Убрать активиста', 'Сейчас активисты: ' + names.join(', ') + '.\nВпишите имя — его код перестанет работать.');
+  if (!name) return;
+  if (names.indexOf(name) < 0) { ui.alert('Такого имени нет: ' + names.join(', ') + '.'); return; }
+  saveCodes_(function (codes) { return removeCodesFor_(codes, name); });
+  ui.alert('Готово: код «' + name + '» больше не работает.');
+}
+function menuAllCodes() {
+  var ui = SpreadsheetApp.getUi();
+  var names = activistNames_(readCodes_());
+  if (!names.length) { ui.alert('Активистов пока нет — добавьте через «Новый код для активиста…».'); return; }
+  if (ui.alert('Новые коды всем', 'Старые коды (' + names.join(', ') + ') перестанут работать. Продолжить?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
   var codes = {}, lines = [];
-  ACTIVISTS.forEach(function (name) {
-    var code = randomCode_();
-    codes[hashCode_(code)] = name;
-    lines.push(name + ': ' + code);
-  });
-  PropertiesService.getScriptProperties().setProperty(CODES_PROP, JSON.stringify(codes));
+  names.forEach(function (name) { var code = randomCode_(); codes[hashCode_(code)] = name; lines.push(name + ': ' + code); });
+  saveCodes_(function () { return codes; });
+  ui.alert('Новые коды (передайте лично, старые больше не действуют):\n\n' + lines.join('\n'));
+}
+
+/**
+ * Владелец запускает вручную из редактора: новые коды всем активистам из списка (старые перестают
+ * работать) — в журнал выполнения. Удобнее то же самое через меню таблицы «Расписание 322».
+ */
+function createActivistCodes() {
+  var names = activistNames_(readCodes_());
+  if (!names.length) { Logger.log('Активистов пока нет: таблица → меню «Расписание 322» → «Новый код для активиста…».'); return; }
+  var codes = {}, lines = [];
+  names.forEach(function (name) { var code = randomCode_(); codes[hashCode_(code)] = name; lines.push(name + ': ' + code); });
+  saveCodes_(function () { return codes; });
   Logger.log('Новые коды (передайте лично, старые больше не действуют):\n' + lines.join('\n'));
 }
 
