@@ -289,7 +289,12 @@ function hwBlock(p) {
   const phrases = frequentPhrases(S.data, p.subject).filter((x) => x !== p.hw);
   wrap.append(h('div', {}, h('label', { class: 'lbl', for: 'hw', text: 'Подпись к ДЗ' }),
     phrases.length ? h('div', { class: 'chips', role: 'group', 'aria-label': 'Частые подписи', style: 'margin-bottom:8px' }, phrases.map((ph) =>
-      h('button', { type: 'button', class: 'chip', onclick: () => { const cur = (pendingText ? ta.value : findPair(p.date, p.id).hw).trim(); save({ hw: cur ? cur + '\n' + ph : ph }, 'Добавлено: ' + ph); }, text: ph }))) : null,
+      h('button', { type: 'button', class: 'chip', onclick: () => {
+        const cur = (pendingText ? ta.value : findPair(p.date, p.id).hw).trim();
+        const next = cur ? cur + '\n' + ph : ph;
+        if (next.length > 5000) { toast('Подпись уже почти 5000 знаков — фраза не поместится'); return; }
+        save({ hw: next }, 'Добавлено: ' + ph);
+      }, text: ph }))) : null,
     ta, counter));
 
   // ссылки: метка темы у каждой, предупреждение о чужой теме
@@ -316,7 +321,11 @@ function hwBlock(p) {
     const merged = [...cur.links, ...links.filter((u) => !cur.links.includes(u))];
     if (merged.length > 10) { linkErr.textContent = 'Не больше 10 ссылок на пару.'; return; }
     const patch = { links: merged };
-    if (rest) { const hw = (pendingText ? ta.value : cur.hw).trim(); patch.hw = hw ? hw + '\n' + rest : rest; }
+    if (rest) {
+      const hw = (pendingText ? ta.value : cur.hw).trim();
+      patch.hw = hw ? hw + '\n' + rest : rest;
+      if (patch.hw.length > 5000) { linkErr.textContent = 'Вместе с вставленным текстом подпись длиннее 5000 знаков. Сократите её или вставьте только ссылку.'; return; }
+    }
     save(patch, links.length > 1 ? `Добавлено ссылок: ${links.length}` : 'Ссылка добавлена');
   };
   linkInput.addEventListener('paste', (e) => {
