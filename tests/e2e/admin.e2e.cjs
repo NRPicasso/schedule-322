@@ -17,23 +17,25 @@ function makeServer() {
   vm.runInContext(read('apps-script/code.src.js') + '\nthis.api = { processOps_ };', ctx);
   const seed = JSON.parse(read('site/data/seed.json'));
   const hist = JSON.parse(read('site/data/demo-entries.json'));
-  const state = { entries: JSON.parse(JSON.stringify(hist.entries)), dayNotes: JSON.parse(JSON.stringify(hist.dayNotes)) };
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const state = { entries: clone(hist.entries), dayNotes: clone(hist.dayNotes), rules: clone(hist.rules), extras: [] };
   const pairIds = Object.fromEntries(seed.template.map((t) => [t.id, true]));
   const codes = { '123456': 'Активист 1', '654321': 'Активист 2' };
   const seen = new Map(); const logs = [];
   const srv = { state, logs, offline: false, dropResponse: 0, posts: 0,
-    payload: () => ({ ...seed, rules: hist.rules, extras: [], entries: state.entries, dayNotes: state.dayNotes }),
+    payload: () => clone({ ...seed, rules: state.rules, extras: state.extras, entries: state.entries, dayNotes: state.dayNotes }),
     post(req) {
       srv.posts++;
       const name = codes[req.code];
       if (!name) return { ok: false, error: 'bad-code', message: 'Код не подошёл. Проверьте цифры.' };
       if (req.action === 'login') return { ok: true, name };
-      const out = ctx.api.processOps_(state, req.ops, pairIds, { name, now: new Date().toISOString() }, (o) => seen.get(o.opId) || null);
+      const out = ctx.api.processOps_(state, clone(req.ops), pairIds, { name, now: new Date().toISOString() }, (o) => seen.get(o.opId) || null);
       out.results.forEach((r) => { if (r.ok) seen.set(r.opId, r); });
       logs.push(...out.logs);
       return JSON.parse(JSON.stringify({ ok: true, name, results: out.results }));
     },
     entry: (date, pairId) => state.entries.find((e) => e.date === date && e.pairId === pairId),
+    rule: (pairId, field, from) => state.rules.find((r) => r.pairId === pairId && r.field === field && r.from === from),
   };
   return srv;
 }
@@ -195,10 +197,135 @@ function makeServer() {
     await page.keyboard.press('Escape'); await page.waitForTimeout(300);
   });
 
+
+  // ---------------- шаг 6: изменения расписания ----------------
+  const MONTHS = { 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12 };
+  const ord = (txt) => { const m = txt.match(/(\d+) (\S+)/); return MONTHS[m[2]] * 100 + Number(m[1]); };
+  const toWeek = async (label) => {   // label — начало недели, например «2 ноября»
+    for (let i = 0; i < 10; i++) {
+      const cur = ord(await page.textContent('.top h1'));
+      if (cur === ord(label)) return;
+      await page.click(`button[aria-label="${cur > ord(label) ? 'Предыдущая' : 'Следующая'} неделя"]`);
+    }
+    assert.fail('не дошли до недели ' + label);
+  };
+  const row = (date, text) => page.locator(`#day-${date} .prow:has-text("${text}")`).first();
+
+  await check('шаг 6: аудитория «только в этот день» — меняется один день, на неделе видно подчёркивание', async () => {
+    await page.reload(); await page.waitForSelector('.fill'); await toWeek('2 ноября');
+    await row('2026-11-03', 'Муниципальное право').click();
+    await page.click('#ch-room'); await page.fill('#f-value', '305'); await page.click('#f-save'); await saved();
+    assert.equal(srv.entry('2026-11-03', 'TUE-1140-bot').room, '305');
+    assert.equal(srv.state.rules.filter((r) => r.pairId === 'TUE-1140-bot' && r.from > '2026-10-06').length, 0);
+    assert.match(await page.textContent('#sheet .sh-head'), /ауд\. 305/);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    assert.equal(await row('2026-11-03', 'Муниципальное право').locator('.room.chg').textContent(), '305');
+    await toWeek('16 ноября');
+    assert.match(await row('2026-11-17', 'Муниципальное право').textContent(), /ауд\. 211/);
+  });
+
+  await check('шаг 6: аудитория «с этого дня и дальше» — правило, прошлые недели не тронуты, снимается одной кнопкой', async () => {
+    await toWeek('2 ноября');
+    await row('2026-11-05', 'Организация судебной').click();
+    await page.click('#ch-room'); await page.fill('#f-value', '401');
+    await page.check('input[name=scope][value=from]');
+    assert.match(await page.textContent('#f-save'), /с 5 ноября и дальше/);
+    await page.click('#f-save'); await saved();
+    assert.equal(srv.rule('THU-1320', 'room', '2026-11-05').value, '401');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await toWeek('9 ноября');  assert.match(await row('2026-11-12', 'Организация судебной').textContent(), /ауд\. 401/);
+    await toWeek('26 октября'); assert.match(await row('2026-10-29', 'Организация судебной').textContent(), /ауд\. 221/);
+    await toWeek('9 ноября');
+    await row('2026-11-12', 'Организация судебной').click(); await page.click('#ch-room');
+    await page.click('#sheet button:has-text("Снять постоянную замену")'); await saved();
+    assert.equal(srv.rule('THU-1320', 'room', '2026-11-05'), undefined);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    assert.match(await row('2026-11-12', 'Организация судебной').textContent(), /ауд\. 221/);
+  });
+
+  await check('шаг 6: отмена пары с причиной и возврат одной кнопкой', async () => {
+    await toWeek('2 ноября');
+    await row('2026-11-05', 'Трудовое право').click();
+    await page.click('#ch-cancel'); await page.click('#sheet .chip:has-text("Преподаватель заболел")'); await page.click('#c-save'); await saved();
+    assert.equal(srv.entry('2026-11-05', 'THU-1650-bot').cancelled, true);
+    assert.equal(srv.entry('2026-11-05', 'THU-1650-bot').reason, 'Преподаватель заболел');
+    assert.match(await page.textContent('#sheet .banner'), /Пара отменена: Преподаватель заболел/);
+    assert.match(await row('2026-11-05', 'Трудовое право').textContent(), /Отменено/);
+    await page.click('#uncancel'); await saved();
+    assert.equal(srv.entry('2026-11-05', 'THU-1650-bot').cancelled, false);
+    assert.equal(srv.entry('2026-11-05', 'THU-1650-bot').reason, '');
+    assert.doesNotMatch(await row('2026-11-05', 'Трудовое право').textContent(), /Отменено/);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  });
+
+  await check('шаг 6: перенос с предпросмотром и предупреждением; ДЗ переезжает; отмена переноса возвращает пару с ДЗ', async () => {
+    await row('2026-11-05', 'Уголовное право').click();
+    await page.click('#ch-move'); await page.fill('#m-date', '2026-11-05'); await page.dispatchEvent('#m-date', 'change');
+    assert.match(await page.textContent('#sheet'), /тот же день/);
+    await page.fill('#m-date', '2026-11-07'); await page.dispatchEvent('#m-date', 'change');
+    await page.click('.grid-times button[data-start="16:50"]');
+    assert.match(await page.textContent('#sheet .ba'), /чт 5 ноября[\s\S]*15:00[\s\S]*сб 7 ноября[\s\S]*16:50/i);
+    await page.click('#m-save'); await saved();
+    const x = srv.state.extras.find((e) => e.srcPairId === 'THU-1500');
+    assert.ok(x, 'перенос записан');
+    assert.deepEqual([x.srcDate, x.date, x.start, x.end, x.room], ['2026-11-05', '2026-11-07', '16:50', '18:20', '115']);
+    assert.match(await page.textContent('#sheet'), /Перенесена с чт 5 ноября/i);
+    assert.match(await row('2026-11-05', 'Уголовное право').textContent(), /Перенесено/);
+    assert.match(await row('2026-11-07', 'Уголовное право').textContent(), /перенос с 5 ноября/);
+    // ДЗ у перенесённой пары
+    await page.fill('#hw', 'Читать главу 3'); await page.waitForTimeout(1300); await saved();
+    assert.equal(srv.state.extras.find((e) => e.id === x.id).hw, 'Читать главу 3');
+    // повторный перенос той же пары с исходной даты сервер не допустит — в карточке исходной пары только «Отменить перенос»
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await row('2026-11-05', 'Уголовное право').click();
+    assert.equal(await page.locator('#ch-move').count(), 0);
+    await page.click('#open-moved');
+    assert.match(await page.textContent('#sheet'), /Перенесена с/);
+    await page.click('#ch-unmove'); await saved();
+    assert.equal(srv.state.extras.length, 0);
+    assert.equal(srv.entry('2026-11-05', 'THU-1500').hw, 'Читать главу 3');
+    assert.doesNotMatch(await row('2026-11-05', 'Уголовное право').textContent(), /Перенесено/);
+    assert.equal(await page.inputValue('#hw'), 'Читать главу 3');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  });
+
+  await check('шаг 6: доп. пара «Другое…» в субботу, смена времени, удаление', async () => {
+    await page.click('#day-2026-11-07 button:has-text("+ пара")');
+    await page.selectOption('#a-subject', 'other'); await page.fill('#a-other', 'Консультация');
+    await page.click('#a-save'); await saved();
+    const x = srv.state.extras.find((e) => e.subject === 'Консультация');
+    assert.ok(x); assert.deepEqual([x.date, x.start, x.end, x.type], ['2026-11-07', '18:30', '20:00', 'other']);
+    assert.match(await row('2026-11-07', 'Консультация').textContent(), /доп\. пара/);
+    await row('2026-11-07', 'Консультация').click();
+    await page.click('#ch-time'); await page.click('.grid-times button[data-start="16:50"]'); await page.click('#t-save'); await saved();
+    assert.equal(srv.state.extras.find((e) => e.id === x.id).start, '16:50');
+    await page.click('#ch-delete'); await saved();
+    assert.equal(srv.state.extras.length, 0);
+    assert.equal(await row('2026-11-07', 'Консультация').count(), 0);
+  });
+
+  await check('шаг 6: семинар-перенос попадает в мастер «Заполнить»', async () => {
+    await row('2026-11-05', 'Организация судебной').click();
+    await page.click('#ch-move'); await page.fill('#m-date', '2026-11-07'); await page.dispatchEvent('#m-date', 'change');
+    await page.click('#m-save'); await saved();
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await page.click('.fill button'); await page.waitForSelector('.wz-foot');
+    let found = false;
+    for (let i = 0; i < 6 && !found; i++) {
+      found = /сб 7 ноября/i.test(await page.textContent('#sheet .sh-head'));
+      if (!found) await page.click('.wz-foot .btn-primary');
+    }
+    assert.ok(found, 'перенесённый семинар есть в мастере');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  });
+
   await check('360 px без горизонтальной прокрутки; группа видит новое ДЗ', async () => {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth) <= 360);
     await page.goto(SITE + '/?now=2026-11-03T09:00'); await page.waitForSelector('.tl');
     assert.match(await page.textContent('.tl'), /Дебаты: аргументы сторон/);
+    assert.match(await page.textContent('.tl'), /305/);                       // разовая аудитория видна группе
+    await page.goto(SITE + '/?now=2026-11-07T09:00'); await page.waitForSelector('.tl');
+    assert.match(await page.textContent('.tl'), /Организация судебной/);        // перенос виден группе
   });
   await check('без ошибок в консоли', async () => assert.deepEqual(errors, []));
   await browser.close();

@@ -105,7 +105,7 @@ test('повторная отправка той же операции не со
 
 test('плохие данные отклоняются с понятной причиной', () => {
   const bad = [
-    op({ pairId: 'NOPE' }), op({ date: '2026-13-01' }), op({ patch: { room: '101' } }),
+    op({ pairId: 'NOPE' }), op({ date: '2026-13-01' }), op({ patch: { subject: 'Другое' } }),
     op({ patch: { links: ['javascript:alert(1)'] } }), op({ patch: { hw: 'x'.repeat(5001) } }), op({ opId: '!' }),
   ];
   const out = processOps_(fresh(), bad, pairIds, meta, noSeen);
@@ -151,4 +151,67 @@ test('нестроковые и «служебные» id пары отклон�
   const out = processOps_(fresh(), [op({ pairId: ['TUE-1140-bot'] }), op({ pairId: '__proto__' }), op({ pairId: 'constructor' }), op({ date: ['2026-11-03'] })],
     Object.assign(Object.create(null), pairIds), meta, noSeen);
   assert.deepEqual([...out.results].map((r) => r.error), ['invalid', 'invalid', 'invalid', 'invalid']);
+});
+
+// ---------- шаг 6: замены, отмена, перенос, доп. пара ----------
+const xop = (o) => ({ opId: 'op-' + Math.random().toString(36).slice(2, 12), ...o });
+const fresh6 = () => ({ entries: JSON.parse(JSON.stringify(history.entries)), dayNotes: [], rules: JSON.parse(JSON.stringify(history.rules)), extras: [] });
+
+test('разовая замена аудитории и отмена пары с причиной; отмена снимается вместе с причиной', () => {
+  const s = fresh6();
+  let r = processOps_(s, [op({ patch: { room: '305' } })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.entry.room, '305');
+  r = processOps_(s, [op({ baseVersion: 1, patch: { cancelled: true, reason: 'преподаватель заболел' } })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.entry.cancelled, true);
+  r = processOps_(s, [op({ baseVersion: 2, patch: { cancelled: false } })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.entry.reason, '');
+  const bad = processOps_(s, [op({ baseVersion: 3, patch: { start: '16:00', end: '15:00' } })], pairIds, meta, noSeen).results[0];
+  assert.equal(bad.error, 'invalid');
+});
+
+test('правило «с этой даты»: ставится, заменяется, снимается; плохое время отклоняется', () => {
+  const s = fresh6(); const n = s.rules.length;
+  processOps_(s, [xop({ type: 'rule.set', date: '2026-11-10', pairId: 'TUE-1500-top', field: 'room', value: '305' })], pairIds, meta, noSeen);
+  processOps_(s, [xop({ type: 'rule.set', date: '2026-11-10', pairId: 'TUE-1500-top', field: 'room', value: '306' })], pairIds, meta, noSeen);
+  assert.equal(s.rules.length, n + 1);
+  assert.equal(s.rules.at(-1).value, '306');
+  processOps_(s, [xop({ type: 'rule.remove', date: '2026-11-10', pairId: 'TUE-1500-top', field: 'room' })], pairIds, meta, noSeen);
+  assert.equal(s.rules.length, n);
+  const bad = processOps_(s, [xop({ type: 'rule.set', date: '2026-11-10', pairId: 'TUE-1500-top', field: 'start', value: '25:00' }),
+    xop({ type: 'rule.set', date: '2026-11-10', pairId: 'TUE-1500-top', field: 'hw', value: 'x' })], pairIds, meta, noSeen);
+  assert.deepEqual([...bad.results].map((r) => r.error), ['invalid', 'invalid']);
+});
+
+test('перенос: доп. пара с источником; повторный перенос — та же запись; второй перенос той же пары запрещён; удаление', () => {
+  const s = fresh6();
+  const move = { id: 'X-move-0001', date: '2026-11-05', start: '18:30', end: '20:00', room: '219', srcDate: '2026-11-03', srcPairId: 'TUE-1140-bot', hw: 'Дебаты', links: [] };
+  let r = processOps_(s, [xop({ type: 'extra.add', date: move.date, extra: move })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.ok, true); assert.equal(r.version, 1);
+  r = processOps_(s, [xop({ type: 'extra.update', date: '2026-11-07', id: 'X-move-0001', baseVersion: 1, patch: { date: '2026-11-07', start: '11:40', end: '13:10' } })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.extra.date, '2026-11-07'); assert.equal(r.version, 2);
+  const dup = processOps_(s, [xop({ type: 'extra.add', date: '2026-11-06', extra: { ...move, id: 'X-move-0002', date: '2026-11-06' } })], pairIds, meta, noSeen).results[0];
+  assert.match(dup.message, /уже перенесена/);
+  const stale = processOps_(s, [xop({ type: 'extra.update', date: '2026-11-07', id: 'X-move-0001', baseVersion: 1, patch: { room: '101' } })], pairIds, meta, noSeen).results[0];
+  assert.equal(stale.error, 'conflict');
+  processOps_(s, [xop({ type: 'extra.remove', date: '2026-11-07', id: 'X-move-0001' })], pairIds, meta, noSeen);
+  assert.equal(s.extras.length, 0);
+});
+
+test('дополнительная пара: нужен предмет и правильное время; не больше 8 в день', () => {
+  const s = fresh6();
+  const extra = (i, o = {}) => xop({ type: 'extra.add', date: '2026-11-07', extra: { id: 'X-add-000' + i, date: '2026-11-07', start: '10:00', end: '11:30', subject: 'Консультация', type: 'other', ...o } });
+  const out = processOps_(s, [extra(1, { subject: '' }), extra(2, { end: '09:00' }), extra(3, { type: 'party' })], pairIds, meta, noSeen);
+  assert.deepEqual([...out.results].map((r) => r.error), ['invalid', 'invalid', 'invalid']);
+  const many = processOps_(s, [1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => extra(i)), pairIds, meta, noSeen);
+  assert.equal([...many.results].filter((r) => r.ok).length, 8);
+  assert.match(many.results[8].message, /не больше 8/);
+});
+
+test('перенос пары с отметкой «ДЗ нет» сохраняет отметку; неверная отметка отклоняется', () => {
+  const s = fresh6();
+  const base = { date: '2026-11-07', start: '16:50', end: '18:20', srcDate: '2026-11-05', srcPairId: 'THU-1500' };
+  let r = processOps_(s, [xop({ type: 'extra.add', date: '2026-11-07', extra: { ...base, id: 'X-nohw-0001', noHw: true } })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.ok, true); assert.equal(r.extra.noHw, true);
+  r = processOps_(s, [xop({ type: 'extra.add', date: '2026-11-07', extra: { ...base, srcPairId: 'THU-1320', id: 'X-nohw-0002', noHw: 'да' } })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.error, 'invalid');
 });

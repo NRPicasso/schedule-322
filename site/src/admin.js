@@ -109,15 +109,18 @@ function reload() {
 
 // ---------------- сохранение ----------------
 function setStatus(s) { S.status = s; renderBar(); }
-function localVersion(date, pairId) {
-  const e = S.data.entries.find((x) => x.date === date && x.pairId === pairId);
-  return e ? e.version || 0 : 0;
+/** Версия объекта на экране — сервер сверит её, чтобы не затереть чужую правку. */
+function localVersion(op) {
+  const obj = op.type === 'entry'
+    ? S.data.entries.find((x) => x.date === op.date && x.pairId === op.pairId)
+    : (S.data.extras || []).find((x) => x.id === op.id);
+  return obj ? obj.version || 0 : 0;
 }
 
 /** Главная точка правок: сразу на экран, в очередь, на сервер; плашка «Отменить». */
 function commit(op, label, { undoable = true, rerenderSheet = true } = {}) {
   const full = { ...op, opId: newOpId() };
-  if (full.type === 'entry') full.baseVersion = localVersion(full.date, full.pairId);
+  if (full.type === 'entry' || full.type === 'extra.update') full.baseVersion = localVersion(full);
   const undo = inverseOf(S.data, full);
   applyOp(S.data, full, { name: S.name });
   S.queue.add(full);
@@ -161,7 +164,11 @@ async function flush() {
       const op = batch.find((o) => o.opId === r.opId);
       if (!op) continue;
       if (r.ok) applyResult(S.data, S.queue, op, r);
-      else if (r.error === 'conflict') {
+      else if (r.error === 'conflict' && op.type !== 'entry') {
+        // перенос или доп. пару одновременно изменил другой активист: показываем свежую версию
+        S.queue.remove(op.opId); S.queue.takePendingFor(op);
+        showRejected(op, 'эту пару только что изменил другой активист — показываю актуальную версию, повторите правку');
+      } else if (r.error === 'conflict') {
         S.queue.remove(op.opId);
         // правки этой пары, ждущие за конфликтной, — часть «моего варианта»
         const pending = S.queue.takePendingFor(op);
@@ -185,9 +192,8 @@ setInterval(() => { if (S.queue.size() && !retryTimer && !S.sending) flush(); },
 
 /** Сервер отклонил правку (неверные данные): показываем причину и сам текст, чтобы его не потерять. */
 function showRejected(op, message) {
-  const text = op.type === 'entry'
-    ? [op.patch.hw, ...(op.patch.links || [])].filter(Boolean).join('\n')
-    : op.text || '';
+  const src = op.patch || op.extra || {};
+  const text = op.text || [src.hw, ...(src.links || [])].filter(Boolean).join('\n');
   const close = () => { $('dialog').replaceChildren(); reload(); };
   const copyBtn = h('button', { type: 'button', class: 'btn btn-secondary', text: 'Скопировать текст', onclick: async () => {
     try { await navigator.clipboard.writeText(text); copyBtn.textContent = 'Скопировано'; } catch { copyBtn.textContent = 'Выделите текст вручную'; }
@@ -214,7 +220,7 @@ const hasHw = (p) => !!(p.hw || p.links.length);
 const isDone = (p) => hasHw(p) || p.noHw;
 const dayLabel = (date) => `${WEEKDAYS_SHORT[weekday(date)]} ${dayMonth(date)}`;
 function weekSeminars() {
-  return weekDates(S.monday).flatMap((d) => buildDay(d, S.data).pairs.filter((p) => p.type === 'seminar' && isActive(p) && p.kind === 'template'));
+  return weekDates(S.monday).flatMap((d) => buildDay(d, S.data).pairs.filter((p) => p.type === 'seminar' && isActive(p)));
 }
 function findPair(date, id) { return buildDay(date, S.data).pairs.find((p) => p.id === id); }
 
@@ -260,7 +266,7 @@ const keptLinks = new Set(); // ссылки, про которые активи
 
 function hwBlock(p) {
   const wrap = h('div', { class: 'stack', style: 'gap:12px' });
-  const save = (patch, label, opts) => { flushText(); commit({ type: 'entry', date: p.date, pairId: p.id, patch }, label, opts); };
+  const save = (patch, label, opts) => { flushText(); commit(pairOp(p, patch), label, opts); };
 
   // «Как в прошлый раз»: прошлое занятие того же предмета и типа
   const prev = previousHomework(S.data, p.date, p.subject, p.type);
@@ -282,7 +288,7 @@ function hwBlock(p) {
   ta.addEventListener('input', () => {
     upd(); clearTimeout(textTimer);
     const value = ta.value;
-    pendingText = () => commit({ type: 'entry', date: p.date, pairId: p.id, patch: { hw: value } }, 'ДЗ сохранено', { rerenderSheet: false });
+    pendingText = () => commit(pairOp(p, { hw: value }), 'ДЗ сохранено', { rerenderSheet: false });
     textTimer = setTimeout(flushText, 1000);
   });
   ta.addEventListener('blur', flushText);
@@ -357,28 +363,275 @@ function hwBlock(p) {
   return wrap;
 }
 
+// ---------------- изменения расписания (шаг 6) ----------------
+// Сетка звонков РГУП: из неё выбирают время переноса и доп. пары одним нажатием.
+const BELLS = [['08:00', '09:30'], ['09:40', '11:10'], ['11:40', '13:10'], ['13:20', '14:50'], ['15:00', '16:30'], ['16:50', '18:20'], ['18:30', '20:00'], ['20:10', '21:40']];
+const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+const validTime = (t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t || '');
+const timeOk = (t) => validTime(t[0]) && validTime(t[1]) && toMin(t[1]) > toMin(t[0]);
+const newExtraId = () => 'X-' + newOpId().replace(/^op-/, '').replace(/-/g, '').slice(0, 20);
+const tplHalf = (p) => (S.data.template.find((t) => t.id === p.id) || {}).half;
+const halfSuffix = (p) => { const hf = tplHalf(p); return hf === 'top' ? ' — по верхним неделям' : hf === 'bottom' ? ' — по нижним неделям' : ''; };
+
+/** Операция правки пары: для пары шаблона — запись дня, для переноса и доп. пары — она сама. */
+function pairOp(p, patch) {
+  return p.kind === 'extra'
+    ? { type: 'extra.update', date: p.date, id: p.id, patch }
+    : { type: 'entry', date: p.date, pairId: p.id, patch };
+}
+function backTo(date, id) { flushText(); sheetBuild = () => pairSheet(date, id); renderSheet(); $('sheet').scrollTop = 0; }
+function backBtn(p) { return h('button', { type: 'button', class: 'btn btn-ghost w100', onclick: () => backTo(p.date, p.id), text: '‹ Назад к паре' }); }
+function goPanel(p, panel) { return () => { flushText(); sheetBuild = () => { const q = findPair(p.date, p.id); return q ? panel(q) : pairSheet(p.date, p.id); }; renderSheet(); $('sheet').scrollTop = 0; }; }
+const panelHead = (title, p) => sheetHead(title, `${fullName(p.subject, S.data.subjects)} · ${dayLabel(p.date)} · ${shortTime(p.start)}`, tile(p.subject, S.data.subjects));
+
+/** Сетка звонков + поля «Начало/Конец» для нестандартного времени (например, физкультура 14:30). */
+function timePicker(cur, onPick) {
+  const custom = !BELLS.some((b) => b[0] === cur[0] && b[1] === cur[1]);
+  const start = h('input', { class: 'input mono', id: 't-start', name: 'start', type: 'time', value: cur[0] });
+  const end = h('input', { class: 'input mono', id: 't-end', name: 'end', type: 'time', value: cur[1] });
+  const grid = h('div', { class: 'grid-times', role: 'group', 'aria-label': 'Сетка звонков' }, BELLS.map((b) => h('button', {
+    type: 'button', 'aria-pressed': String(!custom && b[0] === cur[0]), 'data-start': b[0], text: `${shortTime(b[0])}–${shortTime(b[1])}`,
+    onclick: (ev) => {
+      grid.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
+      ev.currentTarget.setAttribute('aria-pressed', 'true');
+      start.value = b[0]; end.value = b[1]; onPick([b[0], b[1]]);
+    },
+  })));
+  const typed = () => {
+    grid.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
+    onPick([start.value, end.value]);
+  };
+  start.addEventListener('change', typed); end.addEventListener('change', typed);
+  return h('div', { class: 'stack', style: 'gap:8px' }, h('div', { class: 'lbl', style: 'margin:0', text: 'Время по сетке звонков' }), grid,
+    h('div', { class: 'cols' }, h('div', {}, h('label', { class: 'lbl', for: 't-start', text: 'Начало' }), start), h('div', {}, h('label', { class: 'lbl', for: 't-end', text: 'Конец' }), end)));
+}
+
+/** Какая пара уже стоит в это время (кроме самой пары, если она в тот же день). */
+function clashWith(date, t, self) {
+  if (!timeOk(t)) return null;
+  return buildDay(date, S.data).pairs.find((q) => !(self && q.id === self.id && q.date === self.date)
+    && q.numbers.length && toMin(q.start) < toMin(t[1]) && toMin(t[0]) < toMin(q.end)) || null;
+}
+const clashBanner = (c, tail = '') => h('p', { class: 'banner', text: `В это время уже стоит ${fullName(c.subject, S.data.subjects)} (${shortTime(c.start)}–${shortTime(c.end)}).${tail}` });
+
+/** Аудитория или преподаватель: «только в этот день» или «с этого дня и дальше». */
+function fieldPanel(field) {
+  return function panel(p) {
+    const isRoom = field === 'room';
+    const title = isRoom ? 'Аудитория' : 'Преподаватель';
+    const tpl = p.kind === 'template';
+    const input = h('input', { class: 'input' + (isRoom ? ' mono' : ''), id: 'f-value', name: field, type: 'text', autocomplete: 'off', maxlength: isRoom ? '30' : '60', placeholder: isRoom ? 'например, 305' : 'например, Иванова И. И.', 'aria-describedby': 'f-err' });
+    input.value = p[field] || '';
+    const err = h('div', { class: 'err', id: 'f-err', role: 'alert' });
+    let scope = 'day';
+    const btn = h('button', { type: 'button', class: 'btn btn-primary btn-big w100', id: 'f-save' });
+    const setLabel = () => { btn.textContent = !tpl ? 'Сохранить' : scope === 'day' ? `Сохранить на ${dayMonth(p.date)}` : `Заменить с ${dayMonth(p.date)} и дальше`; };
+    setLabel();
+    btn.addEventListener('click', () => {
+      const v = input.value.trim();
+      if (!v) { err.textContent = isRoom ? 'Введите номер аудитории, например 305.' : 'Введите фамилию и инициалы.'; input.setAttribute('aria-invalid', 'true'); input.focus(); return; }
+      if (!tpl) commit(pairOp(p, { [field]: v }), `${title}: ${v}`);
+      else if (scope === 'day') commit(pairOp(p, { [field]: v }), `${title} на ${dayMonth(p.date)}: ${v}`);
+      else {
+        // разовая замена этого дня сильнее правила — убираем её, иначе новое правило не будет видно
+        if (p.changed[field]) commit(pairOp(p, { [field]: '' }), null, { rerenderSheet: false });
+        commit({ type: 'rule.set', date: p.date, pairId: p.id, field, value: v }, `С ${dayMonth(p.date)} и дальше: ${v}`);
+      }
+      backTo(p.date, p.id);
+    });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); btn.click(); } });
+    const box = h('div', { class: 'stack' }, h('div', {}, h('label', { class: 'lbl', for: 'f-value', text: isRoom ? 'Новая аудитория' : 'Кто ведёт' }), input, err));
+    if (tpl) {
+      box.append(h('div', { class: 'radio', role: 'radiogroup', 'aria-label': 'Когда действует' },
+        h('label', {}, h('input', { type: 'radio', name: 'scope', value: 'day', checked: true, onchange: () => { scope = 'day'; setLabel(); } }), `Только ${dayMonth(p.date)}`),
+        h('label', {}, h('input', { type: 'radio', name: 'scope', value: 'from', onchange: () => { scope = 'from'; setLabel(); } }), `С ${dayMonth(p.date)} и дальше${halfSuffix(p)}`)));
+    }
+    box.append(btn);
+    if (tpl && p.changed[field]) {
+      box.append(h('button', { type: 'button', class: 'btn btn-ghost w100', onclick: () => { commit(pairOp(p, { [field]: '' }), 'Разовая замена убрана'); backTo(p.date, p.id); },
+        text: `Убрать замену на ${dayMonth(p.date)} (обычно ${p.changed[field]})` }));
+    }
+    if (tpl && p.ruledFrom[field]) {
+      box.append(h('button', { type: 'button', class: 'btn btn-ghost w100', onclick: () => { commit({ type: 'rule.remove', date: p.ruledFrom[field], pairId: p.id, field }, 'Постоянная замена снята'); backTo(p.date, p.id); },
+        text: `Снять постоянную замену (действует с ${dayMonth(p.ruledFrom[field])})` }));
+    }
+    box.append(backBtn(p));
+    return [panelHead(title, p), box];
+  };
+}
+
+function timePanel(p) {
+  let t = [p.start, p.end];
+  const err = h('div', { class: 'err', role: 'alert' }); const warn = h('div');
+  const check = () => { warn.replaceChildren(); const c = clashWith(p.date, t, p); if (c) warn.append(clashBanner(c, ' Сохранить всё равно можно.')); };
+  const picker = timePicker(t, (v) => { t = v; err.textContent = ''; check(); }); check();
+  const box = h('div', { class: 'stack' }, picker, warn, err,
+    h('button', { type: 'button', class: 'btn btn-primary btn-big w100', id: 't-save', text: `Сохранить время на ${dayMonth(p.date)}`, onclick: () => {
+      if (!timeOk(t)) { err.textContent = 'Время окончания должно быть позже начала.'; return; }
+      commit(pairOp(p, { start: t[0], end: t[1] }), `Время на ${dayMonth(p.date)}: ${shortTime(t[0])}–${shortTime(t[1])}`);
+      backTo(p.date, p.id);
+    } }));
+  if (p.kind === 'template' && (p.changed.start || p.changed.end)) {
+    box.append(h('button', { type: 'button', class: 'btn btn-ghost w100', onclick: () => { commit(pairOp(p, { start: '', end: '' }), 'Обычное время возвращено'); backTo(p.date, p.id); },
+      text: `Вернуть обычное время (${shortTime(p.changed.start || p.start)}–${shortTime(p.changed.end || p.end)})` }));
+  }
+  box.append(backBtn(p));
+  return [panelHead('Время', p), box];
+}
+
+function cancelPanel(p) {
+  const input = h('input', { class: 'input', id: 'reason', name: 'reason', type: 'text', maxlength: '200', placeholder: 'например, преподаватель заболел' });
+  return [panelHead('Отменить пару', p), h('div', { class: 'stack' },
+    h('div', {}, h('label', { class: 'lbl', for: 'reason', text: 'Причина (необязательно)' }),
+      h('div', { class: 'chips', role: 'group', 'aria-label': 'Частые причины', style: 'margin-bottom:8px' }, ['Преподаватель заболел', 'Перенос — дата позже', 'Мероприятие'].map((r) => h('button', { type: 'button', class: 'chip', onclick: () => { input.value = r; }, text: r }))), input),
+    h('p', { class: 'small muted', style: 'margin:0', text: 'Пара останется в расписании со штампом «Отменено» и причиной. Вернуть её можно одной кнопкой.' }),
+    h('button', { type: 'button', class: 'btn btn-danger btn-big w100', id: 'c-save', text: `Отменить пару ${dayMonth(p.date)}`, onclick: () => {
+      commit(pairOp(p, { cancelled: true, reason: input.value.trim() }), 'Пара отменена');
+      backTo(p.date, p.id);
+    } }), backBtn(p))];
+}
+
+function movePanel(p) {
+  let date = ''; let t = [p.start, p.end];
+  const { semesterStart, semesterEnd } = S.data.settings;
+  const dIn = h('input', { class: 'input', id: 'm-date', name: 'date', type: 'date', min: semesterStart, max: semesterEnd });
+  const hint = h('div', { class: 'xs muted', style: 'margin-top:4px' });
+  const room = h('input', { class: 'input mono', id: 'm-room', name: 'room', type: 'text', maxlength: '30', value: p.room });
+  const err = h('div', { class: 'err', role: 'alert' }); const warn = h('div', { class: 'stack', style: 'gap:8px' }); const preview = h('div');
+  const fromDate = p.status === 'moved-here' ? p.movedFrom : p.date;
+  const upd = () => {
+    warn.replaceChildren(); preview.replaceChildren(); hint.replaceChildren(); err.textContent = '';
+    if (!date) return;
+    hint.append(longDay(date) + ' · ', halfLabel(buildDay(date, S.data).half));
+    if (weekday(date) === 0) warn.append(h('p', { class: 'banner', text: 'Это воскресенье. Перенести всё равно можно.' }));
+    if (date === p.date && p.kind === 'template') warn.append(h('p', { class: 'banner', text: 'Это тот же день. Чтобы поменять только время, вернитесь к паре и нажмите «Время».' }));
+    const c = clashWith(date, t, p);
+    if (c) warn.append(clashBanner(c));
+    preview.append(h('div', { class: 'lbl', text: 'Было → стало' }), h('div', { class: 'ba' },
+      h('div', { class: 'variant' }, h('b', { text: dayLabel(fromDate) }), h('div', { class: 'mono', text: `${shortTime(p.start)} · ауд. ${p.room}` })),
+      h('span', { 'aria-hidden': 'true', text: '→' }),
+      h('div', { class: 'variant' }, h('b', { text: dayLabel(date) }), h('div', { class: 'mono', text: `${shortTime(t[0] || p.start)} · ауд. ${room.value.trim() || p.room}` }))));
+  };
+  dIn.addEventListener('change', () => { date = dIn.value; upd(); });
+  room.addEventListener('input', upd);
+  const picker = timePicker(t, (v) => { t = v; upd(); });
+  return [panelHead(p.status === 'moved-here' ? 'Перенести ещё раз' : 'Перенести пару', p), h('div', { class: 'stack' },
+    h('div', {}, h('label', { class: 'lbl', for: 'm-date', text: 'Новая дата' }), dIn, hint), picker,
+    h('div', {}, h('label', { class: 'lbl', for: 'm-room', text: 'Аудитория' }), room), preview, warn, err,
+    h('p', { class: 'small muted', style: 'margin:0', text: 'На старой дате пара останется со штампом «Перенесено». ДЗ переедет вместе с парой.' }),
+    h('button', { type: 'button', class: 'btn btn-primary btn-big w100', id: 'm-save', text: 'Перенести', onclick: () => {
+      if (!date || date < semesterStart || date > semesterEnd) { err.textContent = `Выберите дату в пределах семестра (${dayMonth(semesterStart)} — ${dayMonth(semesterEnd)}).`; dIn.focus(); return; }
+      if (!timeOk(t)) { err.textContent = 'Время окончания должно быть позже начала.'; return; }
+      const r = room.value.trim() || p.room;
+      const label = `Перенесено на ${dayMonth(date)}, ${shortTime(t[0])}`;
+      let id = p.id;
+      if (p.kind === 'extra') commit({ type: 'extra.update', date, id: p.id, patch: { date, start: t[0], end: t[1], room: r } }, label, { rerenderSheet: false });
+      else {
+        id = newExtraId();
+        commit({ type: 'extra.add', date, extra: { id, date, start: t[0], end: t[1], room: r, slots: p.slots, srcDate: p.date, srcPairId: p.id, hw: p.hw, links: [...p.links], noHw: p.noHw } }, label, { rerenderSheet: false });
+      }
+      S.monday = mondayOf(date);
+      sheetBuild = () => pairSheet(date, id); render(); $('sheet').scrollTop = 0;
+    } }), backBtn(p))];
+}
+
+/** Отменить перенос: запись переноса удаляется, пара возвращается на старую дату — вместе с ДЗ, вписанным уже после переноса. */
+function cancelMove(x) {
+  if (!x) return;
+  const src = S.data.entries.find((e) => e.date === x.srcDate && e.pairId === x.srcPairId) || {};
+  const hw = x.hw || '', links = x.links || [];
+  commit({ type: 'extra.remove', date: x.date, id: x.id }, `Перенос отменён — пара снова ${dayMonth(x.srcDate)}`, { rerenderSheet: false });
+  if (hw !== (src.hw || '') || JSON.stringify(links) !== JSON.stringify(src.links || [])) {
+    commit({ type: 'entry', date: x.srcDate, pairId: x.srcPairId, patch: { hw, links } }, null, { rerenderSheet: false });
+  }
+  S.monday = mondayOf(x.srcDate);
+  sheetBuild = () => pairSheet(x.srcDate, x.srcPairId); render(); $('sheet').scrollTop = 0;
+}
+const extraById = (id) => (S.data.extras || []).find((x) => x.id === id);
+const moveOf = (p) => (S.data.extras || []).find((x) => x.srcDate === p.date && x.srcPairId === p.id && !x.cancelled);
+
+/** Дополнительная пара в выбранный день: предмет из шаблона или «другое». */
+function openAddPair(date, ret) { openSheet(() => addPairSheet(date), ret); }
+function addPairSheet(date) {
+  let t = ['18:30', '20:00'];
+  const subjects = [...new Map(S.data.template.map((x) => [x.subject + '|' + x.type, x])).values()];
+  const sel = h('select', { class: 'input', id: 'a-subject', name: 'subject' },
+    subjects.map((x, i) => h('option', { value: String(i), text: `${fullName(x.subject, S.data.subjects)} · ${TYPE[x.type] || ''}` })), h('option', { value: 'other', text: 'Другое…' }));
+  const other = h('input', { class: 'input', id: 'a-other', name: 'other', type: 'text', maxlength: '100', placeholder: 'например, Консультация к экзамену' });
+  const otherBox = h('div', { hidden: true }, h('label', { class: 'lbl', for: 'a-other', text: 'Название' }), other);
+  const room = h('input', { class: 'input mono', id: 'a-room', name: 'room', type: 'text', maxlength: '30', value: subjects[0] ? subjects[0].room : '' });
+  const err = h('div', { class: 'err', role: 'alert' }); const warn = h('div');
+  const check = () => { warn.replaceChildren(); const c = clashWith(date, t, null); if (c) warn.append(clashBanner(c, ' Добавить всё равно можно.')); };
+  sel.addEventListener('change', () => { otherBox.hidden = sel.value !== 'other'; if (sel.value !== 'other') room.value = subjects[Number(sel.value)].room; });
+  const picker = timePicker(t, (v) => { t = v; check(); }); check();
+  return [sheetHead('Дополнительная пара', longDay(date)), h('div', { class: 'stack' },
+    h('div', {}, h('label', { class: 'lbl', for: 'a-subject', text: 'Предмет' }), sel), otherBox, picker, warn,
+    h('div', {}, h('label', { class: 'lbl', for: 'a-room', text: 'Аудитория' }), room), err,
+    h('button', { type: 'button', class: 'btn btn-primary btn-big w100', id: 'a-save', text: 'Добавить пару', onclick: () => {
+      if ((S.data.extras || []).filter((x) => x.date === date).length >= 8) { err.textContent = 'В один день — не больше 8 дополнительных пар.'; return; }
+      let base;
+      if (sel.value === 'other') {
+        const n = other.value.trim();
+        if (!n) { err.textContent = 'Укажите название.'; other.focus(); return; }
+        base = { subject: n, tgName: n, type: 'other', teacher: '' };
+      } else base = subjects[Number(sel.value)];
+      if (!timeOk(t)) { err.textContent = 'Время окончания должно быть позже начала.'; return; }
+      commit({ type: 'extra.add', date, extra: { id: newExtraId(), date, start: t[0], end: t[1], slots: 1, subject: base.subject, tgName: base.tgName || base.subject, type: base.type, room: room.value.trim(), teacher: base.teacher || '', hw: '', links: [] } }, 'Пара добавлена');
+      closeSheet();
+    } }))];
+}
+
+/** Блок «Изменения в этот день» внизу карточки пары. */
+function changesSection(p) {
+  const sec = h('div', { class: 'sec' }, h('div', { class: 'caps muted', text: 'Изменения в этот день' }));
+  sec.append(h('div', { class: 'cols' },
+    h('button', { type: 'button', class: 'btn btn-secondary', id: 'ch-room', onclick: goPanel(p, fieldPanel('room')), text: 'Аудитория' }),
+    h('button', { type: 'button', class: 'btn btn-secondary', id: 'ch-time', onclick: goPanel(p, timePanel), text: 'Время' }),
+    h('button', { type: 'button', class: 'btn btn-secondary', id: 'ch-teacher', onclick: goPanel(p, fieldPanel('teacher')), text: 'Преподаватель' }),
+    h('button', { type: 'button', class: 'btn btn-secondary', id: 'ch-move', onclick: goPanel(p, movePanel), text: p.status === 'moved-here' ? 'Перенести ещё раз' : 'Перенести' })));
+  if (p.kind === 'template') {
+    if (p.status !== 'cancelled') sec.append(h('button', { type: 'button', class: 'btn btn-danger w100', id: 'ch-cancel', onclick: goPanel(p, cancelPanel), text: 'Отменить пару' }));
+  } else if (p.status === 'moved-here') {
+    sec.append(h('button', { type: 'button', class: 'btn btn-danger w100', id: 'ch-unmove', onclick: () => cancelMove(extraById(p.id)), text: `Отменить перенос (вернуть на ${dayMonth(p.movedFrom)})` }));
+  } else {
+    sec.append(h('button', { type: 'button', class: 'btn btn-danger w100', id: 'ch-delete', onclick: () => { commit({ type: 'extra.remove', date: p.date, id: p.id }, 'Пара удалена'); closeSheet(); }, text: 'Удалить пару' }));
+  }
+  return sec;
+}
+
 // ---------------- карточка пары ----------------
 function openPair(date, id, ret) { openSheet(() => pairSheet(date, id), ret); }
 function pairSheet(date, id) {
   const p = findPair(date, id);
-  if (!p) return [sheetHead('Пара не найдена'), h('p', { text: 'Возможно, её перенесли. Закройте карточку.' })];
+  if (!p) return [sheetHead('Пара не найдена'), h('p', { text: 'Возможно, её перенесли или удалили. Закройте карточку.' })];
   const out = [sheetHead(`${fullName(p.subject, S.data.subjects)} · ${TYPE[p.type] || ''}`,
     `${dayLabel(date)} · ${shortTime(p.start)}–${shortTime(p.end)} · ауд. ${p.room}${p.teacher ? ' · ' + p.teacher : ''}`, tile(p.subject, S.data.subjects))];
   if (p.note) out.push(h('p', { class: 'small muted', style: 'margin:-8px 0 12px', text: 'Всегда: ' + p.note }));
+  if (p.status === 'moved-here') out.push(h('p', { class: 'small muted', style: 'margin:-8px 0 12px', text: `Перенесена с ${dayLabel(p.movedFrom)}` }));
+  if (p.status === 'extra') out.push(h('p', { class: 'small muted', style: 'margin:-8px 0 12px', text: 'Дополнительная пара' }));
   if (p.status === 'moved-away') {
-    out.push(h('p', { class: 'banner', text: `Пара перенесена на ${dayMonth(p.movedTo.date)}, ${shortTime(p.movedTo.start)}. ДЗ — у перенесённой пары.` }));
+    const x = moveOf(p);
+    out.push(h('div', { class: 'banner', style: 'display:flex;flex-direction:column;gap:8px' },
+      h('span', { text: `Пара перенесена на ${dayLabel(p.movedTo.date)}, ${shortTime(p.movedTo.start)}, ауд. ${p.movedTo.room}. ДЗ — у перенесённой пары.` }),
+      x ? h('div', { class: 'cols' },
+        h('button', { type: 'button', class: 'btn btn-secondary', id: 'open-moved', onclick: () => { S.monday = mondayOf(x.date); sheetBuild = () => pairSheet(x.date, x.id); render(); $('sheet').scrollTop = 0; }, text: 'Открыть новую дату' }),
+        h('button', { type: 'button', class: 'btn btn-danger', id: 'unmove', onclick: () => cancelMove(x), text: 'Отменить перенос' })) : null));
     return out;
   }
-  if (p.status === 'cancelled') out.push(h('p', { class: 'banner', text: 'Пара отменена' + (p.reason ? ': ' + p.reason : '') }));
-  if (p.kind === 'extra') { out.push(h('p', { class: 'small muted', text: 'ДЗ для перенесённых и дополнительных пар появится на шаге 6.' })); return out; }
+  if (p.status === 'cancelled') {
+    out.push(h('div', { class: 'banner', style: 'display:flex;flex-direction:column;gap:8px' },
+      h('span', { text: 'Пара отменена' + (p.reason ? ': ' + p.reason : '') + '. ДЗ к ней можно оставить — группа его увидит.' }),
+      h('button', { type: 'button', class: 'btn btn-secondary', id: 'uncancel', onclick: () => commit(pairOp(p, { cancelled: false }), 'Пара возвращена'), text: 'Вернуть пару' })));
+  }
   out.push(hwBlock(p));
   out.push(h('div', { class: 'sec' },
     h('label', { class: 'check' },
       h('input', {
         type: 'checkbox', id: 'nohw', checked: p.noHw && !hasHw(p), disabled: hasHw(p),
-        onchange: (e) => { flushText(); commit({ type: 'entry', date, pairId: id, patch: { noHw: e.target.checked } }, e.target.checked ? 'Отмечено: ДЗ нет' : 'Отметка снята'); },
+        onchange: (e) => { flushText(); commit(pairOp(p, { noHw: e.target.checked }), e.target.checked ? 'Отмечено: ДЗ нет' : 'Отметка снята'); },
       }),
       hasHw(p) ? 'ДЗ нет — недоступно: ДЗ уже вписано' : 'ДЗ нет (группа увидит «ДЗ нет»)')));
+  out.push(changesSection(p));
   return out;
 }
 
@@ -408,10 +661,10 @@ function wizardView() {
     hwBlock(p),
     h('div', { class: 'wz-foot' },
       p.noHw && !hasHw(p)
-        ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => commit({ type: 'entry', date, pairId: id, patch: { noHw: false } }, 'Отметка снята'), text: 'Вернуть' })
+        ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => commit(pairOp(p, { noHw: false }), 'Отметка снята'), text: 'Вернуть' })
         : h('button', {
           type: 'button', class: 'btn btn-secondary', disabled: hasHw(p), title: hasHw(p) ? 'ДЗ уже вписано' : null,
-          onclick: () => { commit({ type: 'entry', date, pairId: id, patch: { noHw: true } }, null, { rerenderSheet: false }); go(wizard.i + 1); },
+          onclick: () => { commit(pairOp(p, { noHw: true }), null, { rerenderSheet: false }); go(wizard.i + 1); },
           text: 'ДЗ нет',
         }),
       h('button', { type: 'button', class: 'btn btn-primary btn-big', onclick: () => go(wizard.i + 1), text: wizard.i + 1 < keys.length ? 'Дальше ›' : 'Завершить' })),
@@ -451,12 +704,22 @@ function nextConflict() {
 }
 function showConflict(op, current) {
   const pair = findPair(op.date, op.pairId) || {};
-  const mine = { ...pair, ...op.patch };
+  const mine = { subject: pair.subject, ...op.patch };
   const theirs = current || { hw: '', links: [] };
   const who = theirs.by || 'другой активист';
   const entry = () => S.data.entries.find((x) => x.date === op.date && x.pairId === op.pairId);
   const done = () => { $('dialog').replaceChildren(); conflictOpen = false; nextConflict(); };
-  const describe = (x) => [x.hw || '(без подписи)', ...(x.links || []), x.noHw ? '«ДЗ нет»' : ''].filter(Boolean).join('\n');
+  // показываем только то, что меняли: ДЗ, аудиторию, время, преподавателя, отмену
+  const keys = Object.keys(op.patch);
+  const describe = (x) => {
+    const out = [];
+    if (keys.some((k) => k === 'hw' || k === 'links' || k === 'noHw')) out.push(x.hw || '(без подписи)', ...(x.links || []), x.noHw ? '«ДЗ нет»' : '');
+    if (keys.includes('room')) out.push('Аудитория: ' + (x.room || 'как обычно'));
+    if (keys.includes('start') || keys.includes('end')) out.push('Время: ' + (x.start ? `${shortTime(x.start)}–${shortTime(x.end)}` : 'как обычно'));
+    if (keys.includes('teacher')) out.push('Преподаватель: ' + (x.teacher || 'как обычно'));
+    if (keys.includes('cancelled')) out.push(x.cancelled ? 'Пара отменена' + (x.reason ? ': ' + x.reason : '') : 'Пара не отменена');
+    return out.filter(Boolean).join('\n');
+  };
   const setServerVersion = () => { const e = entry(); if (e) e.version = current ? current.version || 0 : 0; };
   const keepTheirs = () => {
     if (current) { const e = entry(); if (e) Object.assign(e, current); }
@@ -519,7 +782,10 @@ function pairRow(p) {
   const row = h('button', { type: 'button', class: 'prow' + (active ? '' : ' dim'), onclick: (e) => openPair(p.date, p.id, e.currentTarget), 'aria-label': label },
     h('span', { class: 'tm' }, shortTime(p.start), h('span', { text: shortTime(p.end) })), tile(p.subject, S.data.subjects),
     h('span', { class: 'mid' }, h('span', { class: 'subj', text: fullName(p.subject, S.data.subjects) }),
-      h('span', { class: 'meta' }, h('span', {}, 'ауд. ', h('span', { class: 'room', text: p.room })), h('span', { text: TYPE[p.type] || '' }))),
+      h('span', { class: 'meta' }, h('span', {}, 'ауд. ', h('span', { class: 'room' + (p.changed.room || p.ruledFrom.room ? ' chg' : ''), text: p.room })), h('span', { text: TYPE[p.type] || '' }),
+        p.status === 'moved-here' ? h('span', { class: 'pill', text: 'перенос с ' + dayMonth(p.movedFrom) }) : null,
+        p.status === 'extra' ? h('span', { class: 'pill', text: 'доп. пара' }) : null,
+        p.changed.start || p.changed.teacher ? h('span', { class: 'pill', text: 'изменено' }) : null)),
     active ? st : null);
   if (p.status === 'moved-away') row.append(h('span', { class: 'stamp move', 'aria-hidden': 'true', text: 'Перенесено' }));
   if (p.status === 'cancelled') row.append(h('span', { class: 'stamp cancel', 'aria-hidden': 'true', text: 'Отменено' }));
@@ -548,7 +814,9 @@ function renderEditor() {
     box.append(h('div', { class: 'day-head' }, h('span', { class: 'dn', text: WEEKDAYS_SHORT[weekday(d.date)].toUpperCase() }),
       h('span', { class: 'dd' }, h('b', { text: dayMonth(d.date) }),
         h('span', { class: 'xs muted mono', text: active.length ? `${shortTime(active[0].start)}–${shortTime(active[active.length - 1].end)}` : 'пар нет' })),
-      h('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:0 10px;font-size:.875rem', 'aria-label': 'Пометки дня: ' + longDay(d.date), onclick: (e) => openNotes(d.date, e.currentTarget), text: '+ пометка' })));
+      h('span', { class: 'day-acts' },
+        h('button', { type: 'button', class: 'btn btn-ghost', 'aria-label': 'Дополнительная пара: ' + longDay(d.date), onclick: (e) => openAddPair(d.date, e.currentTarget), text: '+ пара' }),
+        h('button', { type: 'button', class: 'btn btn-ghost', 'aria-label': 'Пометки дня: ' + longDay(d.date), onclick: (e) => openNotes(d.date, e.currentTarget), text: '+ пометка' }))));
     if (d.notes.length) box.append(h('div', { class: 'notes' }, d.notes.map((n) => h('button', { type: 'button', class: 'note-btn', onclick: (e) => openNotes(d.date, e.currentTarget), text: n }))));
     if (!d.pairs.length) box.append(h('p', { class: 'small muted', style: 'padding:0 16px 14px;margin:0', text: 'По шаблону пар нет.' }));
     const quiet = d.pairs.filter((p) => p.type === 'lecture' && isActive(p) && !hasHw(p) && p.kind === 'template' && !Object.keys(p.changed).length);

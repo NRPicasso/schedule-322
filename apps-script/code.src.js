@@ -139,90 +139,198 @@ function hashCode_(code) {
   return bytes.map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
 }
 
+var TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+var OVERRIDE_FIELDS = { room: 30, start: 0, end: 0, teacher: 60 }; // поля, которые меняет замена (0 — время)
+var EXTRA_TYPES = { lecture: 1, seminar: 1, other: 1 };
+
+function str_(v, max) { return typeof v === 'string' && v.length <= max; }
+function validLinks_(links) {
+  if (!Array.isArray(links) || links.length > LIMITS.links) return 'не больше 10 ссылок';
+  for (var i = 0; i < links.length; i++) {
+    var u = links[i];
+    if (typeof u !== 'string' || u.length > LIMITS.link || !/^https?:\/\/[^\s]+$/i.test(u)) return 'ссылка должна начинаться с http:// или https://';
+  }
+  return null;
+}
+/** Проверка полей ДЗ и замен в patch. allowed — какие ключи можно. */
+function validPatch_(p, allowed) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return 'нет изменений';
+  for (var k in p) if (allowed.indexOf(k) < 0) return 'поле нельзя менять: ' + k;
+  if ('hw' in p && !str_(p.hw, LIMITS.hw)) return 'текст ДЗ длиннее 5000 знаков';
+  if ('noHw' in p && typeof p.noHw !== 'boolean') return 'неверная отметка «ДЗ нет»';
+  if ('cancelled' in p && typeof p.cancelled !== 'boolean') return 'неверная отметка отмены';
+  if ('reason' in p && !str_(p.reason, LIMITS.note)) return 'причина — до 200 знаков';
+  if ('links' in p) { var e = validLinks_(p.links); if (e) return e; }
+  if ('room' in p && !str_(p.room, 30)) return 'аудитория — до 30 знаков';
+  if ('teacher' in p && !str_(p.teacher, 60)) return 'преподаватель — до 60 знаков';
+  if ('start' in p && !(p.start === '' || TIME_RE.test(p.start))) return 'время — в формате ЧЧ:ММ';
+  if ('end' in p && !(p.end === '' || TIME_RE.test(p.end))) return 'время — в формате ЧЧ:ММ';
+  if ('date' in p && !(typeof p.date === 'string' && DATE_RE.test(p.date))) return 'неверная дата';
+  return null;
+}
+var has_ = function (obj, key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(obj, key); };
+
 /** Проверка одной операции. Возвращает текст ошибки или null. */
 function validateOp_(op, pairIds) {
   if (!op || typeof op !== 'object') return 'пустая операция';
   if (typeof op.opId !== 'string' || !/^[\w-]{8,64}$/.test(op.opId)) return 'нет номера операции';
   if (typeof op.date !== 'string' || !DATE_RE.test(op.date)) return 'неверная дата';
-  if (op.type === 'entry') {
-    if (typeof op.pairId !== 'string' || !Object.prototype.hasOwnProperty.call(pairIds, op.pairId)) return 'такой пары нет в шаблоне';
-    if (typeof op.baseVersion !== 'number' || op.baseVersion < 0) return 'нет версии';
-    var p = op.patch;
-    if (!p || typeof p !== 'object') return 'нет изменений';
-    for (var k in p) if (['hw', 'links', 'noHw'].indexOf(k) < 0) return 'поле нельзя менять: ' + k;
-    if ('hw' in p && (typeof p.hw !== 'string' || p.hw.length > LIMITS.hw)) return 'текст ДЗ длиннее 5000 знаков';
-    if ('noHw' in p && typeof p.noHw !== 'boolean') return 'неверная отметка «ДЗ нет»';
-    if ('links' in p) {
-      if (!Array.isArray(p.links) || p.links.length > LIMITS.links) return 'не больше 10 ссылок';
-      for (var i = 0; i < p.links.length; i++) {
-        var u = p.links[i];
-        if (typeof u !== 'string' || u.length > LIMITS.link || !/^https?:\/\/[^\s]+$/i.test(u)) return 'ссылка должна начинаться с http:// или https://';
-      }
+  switch (op.type) {
+    case 'entry':
+      if (!has_(pairIds, op.pairId)) return 'такой пары нет в шаблоне';
+      if (typeof op.baseVersion !== 'number' || op.baseVersion < 0) return 'нет версии';
+      return validPatch_(op.patch, ['hw', 'links', 'noHw', 'room', 'start', 'end', 'teacher', 'cancelled', 'reason']);
+    case 'note.add': case 'note.remove':
+      if (typeof op.text !== 'string' || !op.text.trim() || op.text.length > LIMITS.note) return 'пометка — от 1 до 200 знаков';
+      return null;
+    case 'rule.set': case 'rule.remove':
+      if (!has_(pairIds, op.pairId)) return 'такой пары нет в шаблоне';
+      if (!has_(OVERRIDE_FIELDS, op.field)) return 'это поле нельзя менять правилом';
+      if (op.type === 'rule.remove') return null;
+      if (op.to != null && op.to !== '' && !(typeof op.to === 'string' && DATE_RE.test(op.to) && op.to >= op.date)) return 'дата окончания должна быть не раньше начала';
+      if (op.field === 'start' || op.field === 'end') return TIME_RE.test(op.value) ? null : 'время — в формате ЧЧ:ММ';
+      return str_(op.value, OVERRIDE_FIELDS[op.field]) && op.value.trim() ? null : 'значение пустое или слишком длинное';
+    case 'extra.add': {
+      var x = op.extra;
+      if (!x || typeof x !== 'object') return 'нет данных пары';
+      if (typeof x.id !== 'string' || !/^X-[\w-]{6,64}$/.test(x.id)) return 'неверный номер пары';
+      if (x.date !== op.date) return 'неверная дата';
+      if (!TIME_RE.test(x.start) || !TIME_RE.test(x.end) || x.end <= x.start) return 'время окончания должно быть позже начала';
+      if (x.srcPairId != null && x.srcPairId !== '') {
+        if (!has_(pairIds, x.srcPairId) || typeof x.srcDate !== 'string' || !DATE_RE.test(x.srcDate)) return 'неверная исходная пара переноса';
+      } else if (!str_(x.subject, 100) || !x.subject.trim()) return 'укажите название предмета';
+      if (x.type != null && !has_(EXTRA_TYPES, x.type)) return 'неверный тип занятия';
+      if (x.slots != null && x.slots !== 1 && x.slots !== 2) return 'неверное число пар';
+      var err = validPatch_({ room: x.room || '', teacher: x.teacher || '', hw: x.hw || '', links: x.links || [], noHw: x.noHw === undefined ? false : x.noHw }, ['room', 'teacher', 'hw', 'links', 'noHw']);
+      if (err) return err;
+      return x.tgName == null || str_(x.tgName, 100) ? null : 'название для Telegram — до 100 знаков';
     }
-    return null;
-  }
-  if (op.type === 'note.add' || op.type === 'note.remove') {
-    if (typeof op.text !== 'string' || !op.text.trim() || op.text.length > LIMITS.note) return 'пометка — от 1 до 200 знаков';
-    return null;
+    case 'extra.update':
+      if (typeof op.id !== 'string') return 'неверный номер пары';
+      if (typeof op.baseVersion !== 'number' || op.baseVersion < 0) return 'нет версии';
+      return validPatch_(op.patch, ['date', 'start', 'end', 'room', 'teacher', 'hw', 'links', 'noHw']);
+    case 'extra.remove':
+      return typeof op.id === 'string' ? null : 'неверный номер пары';
   }
   return 'неизвестная операция';
 }
 
+function findIndex_(list, pred) { for (var i = 0; i < list.length; i++) if (pred(list[i])) return i; return -1; }
+function copy_(x) { return x == null ? null : JSON.parse(JSON.stringify(x)); }
+
 /**
  * Применяет операции к данным (без Google — проверяется тестами).
- * state: {entries, dayNotes}; meta: {name, now};
+ * state: {entries, dayNotes, rules, extras}; meta: {name, now};
  * seen(op) → прошлый результат, 'applied' (операция уже есть в журнале) или null.
  */
 function processOps_(state, ops, pairIds, meta, seen) {
+  state.rules = state.rules || []; state.extras = state.extras || [];
   var results = [], logs = [], thisBatch = {};
+  var done = function (op, result, action, sheet, key, before, after) {
+    results.push(thisBatch[op.opId] = result);
+    if (action) logs.push({ at: meta.now, by: meta.name, action: action, sheet: sheet, key: key, before: before, after: after, opId: op.opId });
+  };
+  var fail = function (op, error, message, extra) { var r = { opId: op && op.opId, ok: false, error: error, message: message }; if (extra) for (var k in extra) r[k] = extra[k]; results.push(r); };
+
   ops.forEach(function (op) {
     var id = op && op.opId;
     var prev = (id && thisBatch[id]) || seen(op);
     if (prev === 'applied') prev = replayResult_(state, op); // результат давно забыт кэшем, но журнал помнит
-    if (prev) { results.push(prev); return; } // повторная отправка той же операции — без дублей
+    if (prev) { results.push(prev); return; }               // повторная отправка той же операции — без дублей
     var err = validateOp_(op, pairIds);
-    if (err) { results.push({ opId: op && op.opId, ok: false, error: 'invalid', message: err }); return; }
+    if (err) { fail(op, 'invalid', err); return; }
+
     if (op.type === 'entry') {
-      var idx = -1;
-      for (var i = 0; i < state.entries.length; i++) if (state.entries[i].date === op.date && state.entries[i].pairId === op.pairId) { idx = i; break; }
+      var idx = findIndex_(state.entries, function (e) { return e.date === op.date && e.pairId === op.pairId; });
       var row = idx >= 0 ? state.entries[idx] : null;
       var version = row ? (row.version || 0) : 0;
-      if (op.baseVersion !== version) {
-        results.push({ opId: op.opId, ok: false, error: 'conflict', current: row });
-        return;
-      }
-      var before = row ? JSON.parse(JSON.stringify(row)) : null;
-      var next = row ? JSON.parse(JSON.stringify(row)) : { date: op.date, pairId: op.pairId, links: [] };
+      if (op.baseVersion !== version) { fail(op, 'conflict', '', { current: row }); return; }
+      var next = row ? copy_(row) : { date: op.date, pairId: op.pairId, links: [] };
       for (var k in op.patch) next[k] = op.patch[k];
       if (next.hw || (next.links && next.links.length)) next.noHw = false; // ДЗ вписано — отметка «нет» снимается
+      if (!next.cancelled) next.reason = '';
+      if (next.start && next.end && next.end <= next.start) { fail(op, 'invalid', 'время окончания должно быть позже начала'); return; }
       next.version = version + 1; next.by = meta.name; next.updatedAt = meta.now;
       if (idx >= 0) state.entries[idx] = next; else state.entries.push(next);
-      results.push(thisBatch[op.opId] = { opId: op.opId, ok: true, version: next.version, entry: next });
-      logs.push({ at: meta.now, by: meta.name, action: 'ДЗ', sheet: SHEETS.entries.name, key: op.date + ' ' + op.pairId, before: before, after: next, opId: op.opId });
+      done(op, { opId: op.opId, ok: true, version: next.version, entry: next }, 'пара', SHEETS.entries.name, op.date + ' ' + op.pairId, copy_(row), next);
       return;
     }
-    var notesOfDay = state.dayNotes.filter(function (n) { return n.date === op.date; });
-    if (op.type === 'note.add') {
-      var exists = notesOfDay.some(function (n) { return n.text === op.text.trim(); });
-      if (!exists) {
-        if (notesOfDay.length >= LIMITS.notesPerDay) { results.push({ opId: op.opId, ok: false, error: 'invalid', message: 'не больше 10 пометок в день' }); return; }
-        state.dayNotes.push({ date: op.date, text: op.text.trim(), by: meta.name, updatedAt: meta.now });
+
+    if (op.type === 'note.add' || op.type === 'note.remove') {
+      var text = op.text.trim();
+      var notesOfDay = state.dayNotes.filter(function (n) { return n.date === op.date; });
+      if (op.type === 'note.add') {
+        if (!notesOfDay.some(function (n) { return n.text === text; })) {
+          if (notesOfDay.length >= LIMITS.notesPerDay) { fail(op, 'invalid', 'не больше 10 пометок в день'); return; }
+          state.dayNotes.push({ date: op.date, text: text, by: meta.name, updatedAt: meta.now });
+        }
+      } else {
+        state.dayNotes = state.dayNotes.filter(function (n) { return !(n.date === op.date && n.text === op.text); });
       }
-    } else {
-      state.dayNotes = state.dayNotes.filter(function (n) { return !(n.date === op.date && n.text === op.text); });
+      done(op, { opId: op.opId, ok: true }, op.type === 'note.add' ? 'пометка +' : 'пометка −', SHEETS.dayNotes.name, op.date, null, op.text);
+      return;
     }
-    results.push(thisBatch[op.opId] = { opId: op.opId, ok: true });
-    logs.push({ at: meta.now, by: meta.name, action: op.type === 'note.add' ? 'пометка +' : 'пометка −', sheet: SHEETS.dayNotes.name, key: op.date, before: null, after: op.text, opId: op.opId });
+
+    if (op.type === 'rule.set' || op.type === 'rule.remove') {
+      var ri = findIndex_(state.rules, function (r) { return r.pairId === op.pairId && r.field === op.field && r.from === op.date; });
+      var beforeRule = ri >= 0 ? copy_(state.rules[ri]) : null;
+      if (op.type === 'rule.remove') {
+        if (ri >= 0) state.rules.splice(ri, 1);
+        done(op, { opId: op.opId, ok: true }, 'правило −', SHEETS.rules.name, op.date + ' ' + op.pairId + ' ' + op.field, beforeRule, null);
+        return;
+      }
+      var rule = { pairId: op.pairId, from: op.date, to: op.to || '', field: op.field, value: op.value.trim(), by: meta.name, updatedAt: meta.now };
+      if (ri >= 0) state.rules[ri] = rule; else state.rules.push(rule);
+      done(op, { opId: op.opId, ok: true, rule: rule }, 'правило', SHEETS.rules.name, op.date + ' ' + op.pairId + ' ' + op.field, beforeRule, rule);
+      return;
+    }
+
+    if (op.type === 'extra.add') {
+      var x = op.extra;
+      if (findIndex_(state.extras, function (e) { return e.id === x.id; }) >= 0) { fail(op, 'invalid', 'пара с таким номером уже есть'); return; }
+      if (state.extras.filter(function (e) { return e.date === x.date; }).length >= 8) { fail(op, 'invalid', 'не больше 8 дополнительных пар в день'); return; }
+      if (x.srcPairId && findIndex_(state.extras, function (e) { return e.srcDate === x.srcDate && e.srcPairId === x.srcPairId; }) >= 0) { fail(op, 'invalid', 'эта пара уже перенесена — перенесите её ещё раз из новой даты'); return; }
+      var added = { id: x.id, date: x.date, start: x.start, end: x.end, slots: x.slots || 1, subject: x.subject || '', tgName: x.tgName || '', type: x.type || '',
+        room: x.room || '', teacher: x.teacher || '', srcDate: x.srcPairId ? x.srcDate : '', srcPairId: x.srcPairId || '', hw: x.hw || '', links: x.links || [],
+        noHw: !!x.noHw && !x.hw && !(x.links || []).length, version: 1, by: meta.name, updatedAt: meta.now };
+      state.extras.push(added);
+      done(op, { opId: op.opId, ok: true, version: 1, extra: added }, added.srcPairId ? 'перенос' : 'доп. пара', SHEETS.extras.name, x.date + ' ' + x.id, null, added);
+      return;
+    }
+
+    var xi = findIndex_(state.extras, function (e) { return e.id === op.id; });
+    if (op.type === 'extra.remove') {
+      var removed = xi >= 0 ? state.extras.splice(xi, 1)[0] : null;
+      done(op, { opId: op.opId, ok: true }, 'пара удалена', SHEETS.extras.name, op.date + ' ' + op.id, removed, null);
+      return;
+    }
+    // extra.update
+    if (xi < 0) { fail(op, 'conflict', '', { current: null }); return; }
+    var cur = state.extras[xi];
+    if ((cur.version || 0) !== op.baseVersion) { fail(op, 'conflict', '', { current: cur }); return; }
+    var upd = copy_(cur);
+    for (var f in op.patch) upd[f] = op.patch[f];
+    if (upd.hw || (upd.links && upd.links.length)) upd.noHw = false;
+    if (!upd.start || !upd.end || upd.end <= upd.start) { fail(op, 'invalid', 'время окончания должно быть позже начала'); return; }
+    upd.version = (cur.version || 0) + 1; upd.by = meta.name; upd.updatedAt = meta.now;
+    state.extras[xi] = upd;
+    done(op, { opId: op.opId, ok: true, version: upd.version, extra: upd }, 'доп./перенос', SHEETS.extras.name, upd.date + ' ' + upd.id, copy_(cur), upd);
   });
   return { state: state, results: results, logs: logs };
 }
 
 /** Ответ на повтор операции, которая уже применена (по журналу): текущее состояние строки. */
 function replayResult_(state, op) {
-  if (op.type !== 'entry') return { opId: op.opId, ok: true, replay: true };
-  var row = null;
-  for (var i = 0; i < state.entries.length; i++) if (state.entries[i].date === op.date && state.entries[i].pairId === op.pairId) row = state.entries[i];
-  return row ? { opId: op.opId, ok: true, replay: true, version: row.version || 0, entry: row } : { opId: op.opId, ok: true, replay: true };
+  var base = { opId: op.opId, ok: true, replay: true };
+  if (op.type === 'entry') {
+    var row = null;
+    (state.entries || []).forEach(function (e) { if (e.date === op.date && e.pairId === op.pairId) row = e; });
+    if (row) { base.version = row.version || 0; base.entry = row; }
+  } else if (op.type === 'extra.add' || op.type === 'extra.update') {
+    var xid = op.type === 'extra.add' ? op.extra && op.extra.id : op.id;
+    (state.extras || []).forEach(function (e) { if (e.id === xid) { base.version = e.version || 0; base.extra = e; } });
+  }
+  return base;
 }
 
 /**
@@ -280,7 +388,9 @@ function handleLocked_(req) {
     rowsToObjects_(readSheet_(SHEETS.template.name), SHEETS.template.cols).forEach(function (t) { pairIds[t.id] = true; });
     var state = {
       entries: rowsToObjects_(readSheet_(SHEETS.entries.name), SHEETS.entries.cols),
-      dayNotes: rowsToObjects_(readSheet_(SHEETS.dayNotes.name), SHEETS.dayNotes.cols)
+      dayNotes: rowsToObjects_(readSheet_(SHEETS.dayNotes.name), SHEETS.dayNotes.cols),
+      rules: rowsToObjects_(readSheet_(SHEETS.rules.name), SHEETS.rules.cols),
+      extras: rowsToObjects_(readSheet_(SHEETS.extras.name), SHEETS.extras.cols)
     };
     var meta = { name: name, now: Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd'T'HH:mm:ssXXX") };
     var journal = null; // читаем журнал, только если кэш не помнит операцию
@@ -294,8 +404,12 @@ function handleLocked_(req) {
     };
     var out = processOps_(state, ops, pairIds, meta, seen);
     if (out.logs.length) {
-      writeObjects_('entries', out.state.entries);
-      writeObjects_('dayNotes', out.state.dayNotes);
+      var touched = {};
+      out.logs.forEach(function (l) { touched[l.sheet] = true; });   // перезаписываем только изменённые листы
+      if (touched[SHEETS.entries.name]) writeObjects_('entries', out.state.entries);
+      if (touched[SHEETS.dayNotes.name]) writeObjects_('dayNotes', out.state.dayNotes);
+      if (touched[SHEETS.rules.name]) writeObjects_('rules', out.state.rules);
+      if (touched[SHEETS.extras.name]) writeObjects_('extras', out.state.extras);
       var logSheet = SpreadsheetApp.getActive().getSheetByName(SHEETS.log.name);
       out.logs.forEach(function (l) {
         logSheet.appendRow([l.at, l.by, l.action, l.sheet, l.key, JSON.stringify(l.before), JSON.stringify(l.after), l.opId]);

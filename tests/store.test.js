@@ -132,3 +132,54 @@ test('при конфликте ожидающие правки пары заб�
   assert.equal(pending.length, 1);
   assert.equal(q.size(), 0);
 });
+
+// ---------- шаг 6 ----------
+test('правило «с этой даты»: применяется, «Отменить» возвращает прежнее или снимает', () => {
+  const data = { entries: [], dayNotes: [], rules: [], extras: [] };
+  const set = { type: 'rule.set', date: '2026-11-10', pairId: 'A', field: 'room', value: '305' };
+  const undo1 = inverseOf(data, set);
+  assert.deepEqual(undo1, { type: 'rule.remove', date: '2026-11-10', pairId: 'A', field: 'room' });
+  applyOp(data, set, {});
+  const undo2 = inverseOf(data, { ...set, value: '306' });
+  assert.equal(undo2.value, '305');
+  applyOp(data, undo1, {});
+  assert.equal(data.rules.length, 0);
+});
+
+test('перенос/доп. пара: добавить, изменить, удалить и отменить каждое', () => {
+  const data = { entries: [], dayNotes: [], rules: [], extras: [] };
+  const add = { type: 'extra.add', date: '2026-11-05', extra: { id: 'X-test-01', date: '2026-11-05', start: '18:30', end: '20:00', srcDate: '2026-11-03', srcPairId: 'A' } };
+  assert.deepEqual(inverseOf(data, add), { type: 'extra.remove', date: '2026-11-05', id: 'X-test-01' });
+  applyOp(data, add, {});
+  const upd = { type: 'extra.update', date: '2026-11-07', id: 'X-test-01', patch: { date: '2026-11-07', start: '11:40', end: '13:10' } };
+  assert.deepEqual(inverseOf(data, upd).patch, { date: '2026-11-05', start: '18:30', end: '20:00' });
+  applyOp(data, upd, {});
+  assert.equal(data.extras[0].date, '2026-11-07');
+  const back = inverseOf(data, { type: 'extra.remove', date: '2026-11-07', id: 'X-test-01' });
+  applyOp(data, { type: 'extra.remove', date: '2026-11-07', id: 'X-test-01' }, {});
+  assert.equal(data.extras.length, 0);
+  applyOp(data, back, {});
+  assert.equal(data.extras[0].srcPairId, 'A');
+  assert.notEqual(data.extras[0].id, 'X-test-01'); // возвращённая пара — новая запись
+});
+
+test('отмена пары: «Отменить» возвращает и причину; снятие отмены очищает причину', () => {
+  const data = { entries: [{ date: 'd', pairId: 'A', links: [], version: 1 }], dayNotes: [] };
+  const cancel = { type: 'entry', date: 'd', pairId: 'A', patch: { cancelled: true, reason: 'болезнь' } };
+  assert.deepEqual(inverseOf(data, cancel).patch, { cancelled: false, reason: '' });
+  applyOp(data, cancel, {});
+  applyOp(data, { type: 'entry', date: 'd', pairId: 'A', patch: { cancelled: false } }, {});
+  assert.equal(data.entries[0].reason, '');
+});
+
+test('очередь: одна операция на доп. пару в отправке; ответ обновляет версию доп. пары', () => {
+  const q = createQueue(mem());
+  const data = { entries: [], dayNotes: [], extras: [{ id: 'X-q-0001', date: 'd', start: '10:00', end: '11:30', version: 0 }] };
+  q.add({ opId: 'op-x0000001', type: 'extra.add', date: 'd', extra: { id: 'X-q-0001' } });
+  q.add({ opId: 'op-x0000002', type: 'extra.update', date: 'd', id: 'X-q-0001', baseVersion: 0, patch: { room: '101' } });
+  const batch = q.takeBatch();
+  assert.deepEqual(batch.map((o) => o.opId), ['op-x0000001']);
+  applyResult(data, q, batch[0], { opId: 'op-x0000001', ok: true, version: 1, extra: { id: 'X-q-0001', date: 'd', start: '10:00', end: '11:30', version: 1 } });
+  assert.equal(q.list()[0].baseVersion, 1);
+  assert.equal(data.extras[0].version, 1);
+});
