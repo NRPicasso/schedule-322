@@ -19,27 +19,48 @@
   <script type="module">
     import { createGroupView } from './src/view.js';
     import { moscowNow, parseNowOverride } from './src/time.js';
+    import { loadSchedule } from './src/api.js';
+    import { API_URL } from './src/config.js';
 
-    const view = createGroupView({ top: document.getElementById('top'), app: document.getElementById('app') });
+    const app = document.getElementById('app');
+    const view = createGroupView({ top: document.getElementById('top'), app });
+    const override = parseNowOverride(location.search);
+    const clock = () => ({ now: override || moscowNow(), nowMs: Date.now() });
 
-    // Шаг 2: данные из файлов. На шаге 3 их заменит загрузка из Google Таблицы.
-    async function loadData() {
-      const [seed, demo] = await Promise.all(['data/seed.json', 'data/demo-entries.json'].map(async (url) => {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(url + ': ' + res.status);
-        return res.json();
-      }));
-      return { ...seed, ...demo };
+    const savedLabel = (ms) => new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(ms);
+
+    function showError() {
+      const retry = Object.assign(document.createElement('button'), { type: 'button', className: 'btn btn-secondary', textContent: 'Повторить' });
+      retry.addEventListener('click', refresh);
+      const box = Object.assign(document.createElement('div'), { className: 'empty' });
+      box.append(Object.assign(document.createElement('b'), { textContent: 'Не удалось загрузить расписание' }),
+        Object.assign(document.createElement('span'), { className: 'muted', textContent: 'Проверьте интернет и нажмите «Повторить».' }), retry);
+      app.replaceChildren(box);
     }
 
-    const override = parseNowOverride(location.search);
-    const tick = () => view.show({ now: override || moscowNow(), nowMs: Date.now() });
+    // Локально (API_URL пустой) — данные из файлов в site/data.
+    async function localFetch() {
+      const [seed, demo] = await Promise.all(['data/seed.json', 'data/demo-entries.json'].map((u) => fetch(u).then((r) => r.json())));
+      return { ok: true, status: 200, json: async () => ({ ...seed, ...demo }) };
+    }
 
-    loadData()
-      .then((data) => { view.show({ data, now: override || moscowNow(), nowMs: Date.now() }); setInterval(tick, 60 * 1000); })
-      .catch(() => {
-        document.getElementById('app').replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Не удалось загрузить расписание. Проверьте интернет и обновите страницу.' }));
+    function refresh() {
+      return loadSchedule({
+        apiUrl: API_URL,
+        fetchFn: API_URL ? fetch.bind(window) : localFetch,
+        storage: API_URL ? window.localStorage : null,
+        onData: (data) => view.show({ data, notice: '', ...clock() }),
+        onStatus: (status, info) => {
+          if (status === 'offline') view.show({ notice: `Нет связи с сервером. Показано сохранённое от ${savedLabel(info.savedAt)}.`, ...clock() });
+          else showError();
+        },
       });
+    }
+
+    refresh();
+    setInterval(() => view.show(clock()), 60 * 1000);   // «идёт сейчас» обновляется каждую минуту
+    setInterval(refresh, 5 * 60 * 1000);                // свежие данные — раз в 5 минут
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   </script>
 </body>
 </html>
