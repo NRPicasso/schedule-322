@@ -107,8 +107,11 @@ export function buildDay(iso, data) {
   const wd = weekday(iso);
   const entriesByKey = new Map((data.entries || []).map((e) => [e.date + '|' + e.pairId, e]));
 
+  const { semesterStart, semesterEnd } = data.settings;
+  const outOfSemester = iso < semesterStart || iso > semesterEnd;
+  // вне семестра шаблон не действует; доп. пары (например, консультация) показываются
   const pairs = data.template
-    .filter((t) => t.day === wd && (t.half === 'both' || t.half === half))
+    .filter((t) => !outOfSemester && t.day === wd && (t.half === 'both' || t.half === half))
     .map((t) => fromTemplate(t, iso, data, entriesByKey));
   for (const x of data.extras || []) {
     if (x.date === iso && !x.cancelled) pairs.push(fromExtra(x, data));
@@ -123,5 +126,5 @@ export function buildDay(iso, data) {
     n += p.slots;
   }
   const notes = (data.dayNotes || []).filter((d) => d.date === iso).map((d) => d.text);
-  return { date: iso, half, pairs, notes };
+  return { date: iso, half, pairs, notes, outOfSemester };
 }
