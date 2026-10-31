@@ -1,0 +1,7 @@
+{
+  "name": "raspisanie-322",
+  "private": true,
+  "type": "module",
+  "description": "Расписание группы 322: сайт для группы и редактор для активистов",
+  "scripts": { "test": "node --test" }
+}
