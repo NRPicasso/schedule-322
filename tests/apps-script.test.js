@@ -97,7 +97,7 @@ test('правка поверх чужой версии — конфликт, д
 test('повторная отправка той же операции не создаёт дубль', () => {
   const s = fresh(); const o = op();
   const first = processOps_(s, [o], pairIds, meta, noSeen).results[0];
-  const again = processOps_(s, [o], pairIds, meta, (id) => (id === o.opId ? first : null));
+  const again = processOps_(s, [o], pairIds, meta, (x) => (x.opId === o.opId ? first : null));
   assert.equal(again.results[0], first);
   assert.equal(again.logs.length, 0);
   assert.equal(s.entries.filter((e) => e.date === '2026-11-03').length, 1);
@@ -124,4 +124,31 @@ test('«ДЗ нет» снимается, когда ДЗ вписано; пом
   assert.deepEqual([...s.dayNotes].map((x) => x.text), ['Сменка', 'КСУ']);
   const out = processOps_(s, [n('note.remove', 'Сменка')], pairIds, meta, noSeen);
   assert.deepEqual([...out.state.dayNotes].map((x) => x.text), ['КСУ']);
+});
+
+// ---------- найдено при проверке шага 4 ----------
+test('одна и та же операция дважды в одной пачке — применяется один раз', () => {
+  const s = fresh(); const o = op();
+  const out = processOps_(s, [o, o], pairIds, meta, noSeen);
+  assert.equal(out.logs.length, 1);
+  assert.equal(out.results[1].version, 1);
+});
+
+test('кэш забыл операцию, но журнал помнит: повтор не даёт конфликт с самим собой', () => {
+  const s = fresh(); const o = op();
+  processOps_(s, [o], pairIds, meta, noSeen);
+  const replay = processOps_(s, [o], pairIds, meta, (x) => (x.opId === o.opId ? 'applied' : null));
+  assert.equal(replay.results[0].ok, true);
+  assert.equal(replay.results[0].version, 1);
+  assert.equal(replay.logs.length, 0);
+  const n = { opId: 'note-replay-1', type: 'note.remove', date: '2026-11-04', text: 'Сменка' };
+  s.dayNotes.push({ date: '2026-11-04', text: 'Сменка' });          // пометку добавили заново после старого удаления
+  processOps_(s, [n], pairIds, meta, () => 'applied');              // старое удаление пришло повторно
+  assert.equal(s.dayNotes.length, 1);                                // и не стёрло новую пометку
+});
+
+test('нестроковые и «служебные» id пары отклоняются', () => {
+  const out = processOps_(fresh(), [op({ pairId: ['TUE-1140-bot'] }), op({ pairId: '__proto__' }), op({ pairId: 'constructor' }), op({ date: ['2026-11-03'] })],
+    Object.assign(Object.create(null), pairIds), meta, noSeen);
+  assert.deepEqual([...out.results].map((r) => r.error), ['invalid', 'invalid', 'invalid', 'invalid']);
 });

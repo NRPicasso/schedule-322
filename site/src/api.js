@@ -27,7 +27,12 @@ export async function loadSchedule({ apiUrl, fetchFn = globalThis.fetch, storage
   const saved = storage ? readSaved(storage) : null;
   if (saved) onData(saved.data, { source: 'cache', savedAt: saved.savedAt });
   try {
-    const res = await fetchFn(apiUrl, { cache: 'no-store' });
+    // тайм-аут 20 с: на «зависшей» мобильной сети сразу показываем сохранённое
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 20000) : null;
+    let res;
+    try { res = await fetchFn(apiUrl, { cache: 'no-store', signal: controller ? controller.signal : undefined }); }
+    finally { if (timer) clearTimeout(timer); }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (!isValidPayload(data)) throw new Error(data && data.error ? data.error : 'неожиданный ответ');

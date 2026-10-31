@@ -104,6 +104,8 @@ function doGet() {
   var cache = CacheService.getScriptCache();
   var body = cache.get(CACHE_KEY);
   if (!body) {
+    var lock = LockService.getScriptLock();
+    var locked = lock.tryLock(10000);
     try {
       var payload = buildPayload_(readSheet_);
       payload.generatedAt = new Date().toISOString();
@@ -111,6 +113,8 @@ function doGet() {
       if (body.length < 90000) cache.put(CACHE_KEY, body, CACHE_SECONDS); // кэш хранит до 100 КБ на ключ
     } catch (err) {
       body = JSON.stringify({ error: 'Не удалось прочитать таблицу: ' + err.message });
+    } finally {
+      if (locked) lock.releaseLock();
     }
   }
   return ContentService.createTextOutput(body).setMimeType(ContentService.MimeType.JSON);
@@ -139,9 +143,9 @@ function hashCode_(code) {
 function validateOp_(op, pairIds) {
   if (!op || typeof op !== 'object') return 'пустая операция';
   if (typeof op.opId !== 'string' || !/^[\w-]{8,64}$/.test(op.opId)) return 'нет номера операции';
-  if (!DATE_RE.test(String(op.date))) return 'неверная дата';
+  if (typeof op.date !== 'string' || !DATE_RE.test(op.date)) return 'неверная дата';
   if (op.type === 'entry') {
-    if (!pairIds[op.pairId]) return 'такой пары нет в шаблоне';
+    if (typeof op.pairId !== 'string' || !Object.prototype.hasOwnProperty.call(pairIds, op.pairId)) return 'такой пары нет в шаблоне';
     if (typeof op.baseVersion !== 'number' || op.baseVersion < 0) return 'нет версии';
     var p = op.patch;
     if (!p || typeof p !== 'object') return 'нет изменений';
@@ -166,12 +170,15 @@ function validateOp_(op, pairIds) {
 
 /**
  * Применяет операции к данным (без Google — проверяется тестами).
- * state: {entries, dayNotes}; meta: {name, now}; seen(opId) → прошлый результат или null.
+ * state: {entries, dayNotes}; meta: {name, now};
+ * seen(op) → прошлый результат, 'applied' (операция уже есть в журнале) или null.
  */
 function processOps_(state, ops, pairIds, meta, seen) {
-  var results = [], logs = [];
+  var results = [], logs = [], thisBatch = {};
   ops.forEach(function (op) {
-    var prev = seen(op && op.opId);
+    var id = op && op.opId;
+    var prev = (id && thisBatch[id]) || seen(op);
+    if (prev === 'applied') prev = replayResult_(state, op); // результат давно забыт кэшем, но журнал помнит
     if (prev) { results.push(prev); return; } // повторная отправка той же операции — без дублей
     var err = validateOp_(op, pairIds);
     if (err) { results.push({ opId: op && op.opId, ok: false, error: 'invalid', message: err }); return; }
@@ -190,7 +197,7 @@ function processOps_(state, ops, pairIds, meta, seen) {
       if (next.hw || (next.links && next.links.length)) next.noHw = false; // ДЗ вписано — отметка «нет» снимается
       next.version = version + 1; next.by = meta.name; next.updatedAt = meta.now;
       if (idx >= 0) state.entries[idx] = next; else state.entries.push(next);
-      results.push({ opId: op.opId, ok: true, version: next.version, entry: next });
+      results.push(thisBatch[op.opId] = { opId: op.opId, ok: true, version: next.version, entry: next });
       logs.push({ at: meta.now, by: meta.name, action: 'ДЗ', sheet: SHEETS.entries.name, key: op.date + ' ' + op.pairId, before: before, after: next, opId: op.opId });
       return;
     }
@@ -204,22 +211,58 @@ function processOps_(state, ops, pairIds, meta, seen) {
     } else {
       state.dayNotes = state.dayNotes.filter(function (n) { return !(n.date === op.date && n.text === op.text); });
     }
-    results.push({ opId: op.opId, ok: true });
+    results.push(thisBatch[op.opId] = { opId: op.opId, ok: true });
     logs.push({ at: meta.now, by: meta.name, action: op.type === 'note.add' ? 'пометка +' : 'пометка −', sheet: SHEETS.dayNotes.name, key: op.date, before: null, after: op.text, opId: op.opId });
   });
   return { state: state, results: results, logs: logs };
 }
 
+/** Ответ на повтор операции, которая уже применена (по журналу): текущее состояние строки. */
+function replayResult_(state, op) {
+  if (op.type !== 'entry') return { opId: op.opId, ok: true, replay: true };
+  var row = null;
+  for (var i = 0; i < state.entries.length; i++) if (state.entries[i].date === op.date && state.entries[i].pairId === op.pairId) row = state.entries[i];
+  return row ? { opId: op.opId, ok: true, replay: true, version: row.version || 0, entry: row } : { opId: op.opId, ok: true, replay: true };
+}
+
+/**
+ * Перезаписывает лист данными. Столбцы ищутся по заголовкам (владелец мог их переставить);
+ * если заголовка нет — запись отменяется, чтобы не испортить данные. Сначала пишем, потом
+ * очищаем «хвост» — пустого листа не бывает даже на мгновение.
+ */
 function writeObjects_(key, items) {
   var def = SHEETS[key];
   var sh = SpreadsheetApp.getActive().getSheetByName(def.name);
-  var width = def.cols.length;
+  var lastCol = sh.getLastColumn();
+  var header = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim(); });
+  var pos = def.cols.map(function (c) { return header.indexOf(c[0]); });
+  if (pos.some(function (p) { return p < 0; })) throw new Error('на листе «' + def.name + '» не хватает столбцов — запись отменена');
+  var plain = objectsToRows_(items, def.cols);
+  var rows = plain.map(function (r) { var row = new Array(lastCol).fill(''); pos.forEach(function (p, i) { row[p] = r[i]; }); return row; });
   var last = sh.getLastRow();
-  if (last > 1) sh.getRange(2, 1, last - 1, width).clearContent();
-  if (items.length) sh.getRange(2, 1, items.length, width).setNumberFormat('@').setValues(objectsToRows_(items, def.cols));
+  if (rows.length) sh.getRange(2, 1, rows.length, lastCol).setNumberFormat('@').setValues(rows);
+  if (last > rows.length + 1) sh.getRange(rows.length + 2, 1, last - rows.length - 1, lastCol).clearContent();
+}
+
+/** op_id из последних строк журнала — надёжная память «эта операция уже применена». */
+function journalOpIds_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEETS.log.name);
+  var last = sh.getLastRow();
+  var ids = {};
+  if (last < 2) return ids;
+  var col = SHEETS.log.cols.length; // op_id — последний столбец журнала
+  var from = Math.max(2, last - 3000);
+  sh.getRange(from, col, last - from + 1, 1).getValues().forEach(function (r) { if (r[0]) ids[String(r[0])] = true; });
+  return ids;
 }
 
 function handleRequest_(req) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000); // всё по очереди: и проверка кода со счётчиком ошибок, и запись
+  try { return handleLocked_(req); } finally { lock.releaseLock(); }
+}
+
+function handleLocked_(req) {
   var cache = CacheService.getScriptCache();
   if (cache.get(LOCK_KEY)) return { ok: false, error: 'locked', message: 'Слишком много неверных попыток. Попробуйте через 10 минут или напишите Еремею.' };
   var codes = JSON.parse(PropertiesService.getScriptProperties().getProperty(CODES_PROP) || '{}');
@@ -230,20 +273,25 @@ function handleRequest_(req) {
     else cache.put(FAIL_KEY, String(fails), LOCK_SECONDS);
     return { ok: false, error: 'bad-code', message: 'Код не подошёл. Проверьте цифры.' };
   }
-  cache.remove(FAIL_KEY);
   if (req.action === 'login') return { ok: true, name: name };
   var ops = Array.isArray(req.ops) ? req.ops.slice(0, LIMITS.opsPerRequest) : [];
-  var lock = LockService.getScriptLock();
-  lock.waitLock(15000); // две правки одновременно выполняются по очереди
-  try {
-    var pairIds = {};
+  {
+    var pairIds = Object.create(null);
     rowsToObjects_(readSheet_(SHEETS.template.name), SHEETS.template.cols).forEach(function (t) { pairIds[t.id] = true; });
     var state = {
       entries: rowsToObjects_(readSheet_(SHEETS.entries.name), SHEETS.entries.cols),
       dayNotes: rowsToObjects_(readSheet_(SHEETS.dayNotes.name), SHEETS.dayNotes.cols)
     };
     var meta = { name: name, now: Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd'T'HH:mm:ssXXX") };
-    var seen = function (id) { var v = id && cache.get('op:' + id); return v ? JSON.parse(v) : null; };
+    var journal = null; // читаем журнал, только если кэш не помнит операцию
+    var seen = function (op) {
+      var id = op && op.opId;
+      if (!id) return null;
+      var v = cache.get('op:' + id);
+      if (v) return JSON.parse(v);
+      if (!journal) journal = journalOpIds_();
+      return journal[id] ? 'applied' : null;
+    };
     var out = processOps_(state, ops, pairIds, meta, seen);
     if (out.logs.length) {
       writeObjects_('entries', out.state.entries);
@@ -256,8 +304,6 @@ function handleRequest_(req) {
     }
     out.results.forEach(function (r) { if (r.ok && r.opId) cache.put('op:' + r.opId, JSON.stringify(r), 21600); });
     return { ok: true, name: name, results: out.results };
-  } finally {
-    lock.releaseLock();
   }
 }
 

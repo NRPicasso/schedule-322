@@ -3,6 +3,12 @@
 const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 const SITE = process.env.SITE || 'http://localhost:8766';
+const path = require('node:path');
+const fs = require('node:fs');
+const ROOT = process.env.ROOT || path.join(__dirname, '..', '..');
+const readJson = (p) => JSON.parse(fs.readFileSync(path.join(ROOT, p), 'utf8'));
+// сервер Google имитируется данными из site/data (тот же формат, что отдаёт Apps Script)
+const PAYLOAD = JSON.stringify({ ...readJson('site/data/seed.json'), ...readJson('site/data/demo-entries.json') });
 
 (async () => {
   const browser = await chromium.launch();
@@ -11,6 +17,7 @@ const SITE = process.env.SITE || 'http://localhost:8766';
   for (const [scheme, width] of [['light', 360], ['dark', 320], ['light', 375]]) {
     const page = await browser.newPage({ viewport: { width, height: 800 }, colorScheme: scheme });
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
+    await page.route(/script\.google\.com\/macros/, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: PAYLOAD }));
     const open = async (q) => { await page.goto(SITE + '/' + q); await page.waitForSelector('.tabs'); };
 
     await check(`${scheme} ${width}px: вт 3.11 в 10:00 — «Сегодня», 3 пары`, async () => {

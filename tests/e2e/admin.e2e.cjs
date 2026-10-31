@@ -21,14 +21,14 @@ function makeServer() {
   const pairIds = Object.fromEntries(seed.template.map((t) => [t.id, true]));
   const codes = { '123456': 'Активист 1', '654321': 'Активист 2' };
   const seen = new Map(); const logs = [];
-  const srv = { state, logs, offline: false, posts: 0,
+  const srv = { state, logs, offline: false, dropResponse: 0, posts: 0,
     payload: () => ({ ...seed, rules: hist.rules, extras: [], entries: state.entries, dayNotes: state.dayNotes }),
     post(req) {
       srv.posts++;
       const name = codes[req.code];
       if (!name) return { ok: false, error: 'bad-code', message: 'Код не подошёл. Проверьте цифры.' };
       if (req.action === 'login') return { ok: true, name };
-      const out = ctx.api.processOps_(state, req.ops, pairIds, { name, now: new Date().toISOString() }, (id) => seen.get(id) || null);
+      const out = ctx.api.processOps_(state, req.ops, pairIds, { name, now: new Date().toISOString() }, (o) => seen.get(o.opId) || null);
       out.results.forEach((r) => { if (r.ok) seen.set(r.opId, r); });
       logs.push(...out.logs);
       return JSON.parse(JSON.stringify({ ok: true, name, results: out.results }));
@@ -49,6 +49,7 @@ function makeServer() {
     if (srv.offline) return route.abort('internetdisconnected');
     const req = route.request();
     const body = req.method() === 'POST' ? srv.post(JSON.parse(req.postData())) : srv.payload();
+    if (req.method() === 'POST' && srv.dropResponse > 0) { srv.dropResponse--; return route.abort('connectionreset'); } // сервер применил, ответ потерялся
     await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) });
   });
   const saved = () => page.waitForSelector('.save.saved', { timeout: 8000 });
@@ -120,6 +121,21 @@ function makeServer() {
     await page.waitForTimeout(500);
     assert.equal(srv.entry('2026-11-06', 'FRI-1830').hw, 'Глава 5 УПК');
     assert.equal(srv.logs.filter((l) => l.key === '2026-11-06 FRI-1830').length, 1);
+  });
+
+  await check('ответ сервера потерялся, а активист продолжил печатать — сохраняется последнее, без «конфликта с собой»', async () => {
+    await page.click('.prow:has-text("Организация судебной")');
+    srv.dropResponse = 1;
+    await page.fill('#hw', 'Доклады'); await page.waitForTimeout(1300);
+    await page.waitForSelector('.save.offline');
+    await page.fill('#hw', 'Доклады тема 5'); await page.waitForTimeout(1300);
+    const retry = page.locator('#bar button:has-text("Повторить")');
+    if (await retry.count()) await retry.click();                     // или дождёмся автоматического повтора
+    await page.waitForFunction(() => /Сохранено/.test(document.querySelector('.save').textContent), null, { timeout: 15000 });
+    assert.equal(await page.locator('.dialog').count(), 0);
+    assert.equal(srv.entry('2026-11-05', 'THU-1320').hw, 'Доклады тема 5');
+    assert.equal(await page.inputValue('#hw'), 'Доклады тема 5');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
   });
 
   await check('конфликт: другой активист успел раньше — выбор варианта, ничего не затёрто молча', async () => {

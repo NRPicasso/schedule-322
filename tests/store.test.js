@@ -13,7 +13,7 @@ test('правка ДЗ видна сразу и помнит прежнее з�
   applyOp(data, op, { name: 'Активист 1' });
   assert.equal(data.entries[0].hw, 'Доклады');
   assert.equal(data.entries[0].by, 'Активист 1');
-  assert.deepEqual(undo.patch, { hw: 'Старое' });
+  assert.deepEqual(undo.patch, { hw: 'Старое', noHw: false });
   applyOp(data, undo, { name: 'Активист 1' });
   assert.equal(data.entries[0].hw, 'Старое');
 });
@@ -67,4 +67,68 @@ test('ответ сервера обновляет версию, но не за�
   applyResult(data, q, sent, { opId: sent.opId, ok: true, version: 3, entry: { date: '2026-11-03', pairId: 'A', hw: 'Новое', links: [], version: 3 } });
   assert.equal(data.entries[0].hw, 'Ещё новее');
   assert.equal(data.entries[0].version, 3);
+});
+
+// ---------- найдено при проверке шага 4 ----------
+
+test('операцию, которую уже отправляли, нельзя менять: новая правка встаёт отдельной операцией', () => {
+  const q = createQueue(mem());
+  q.add({ opId: 'op-a0000001', type: 'entry', date: 'd', pairId: 'A', baseVersion: 2, patch: { hw: 'A' } });
+  const [sent] = q.takeBatch();
+  q.release([sent.opId]);                 // ответ потерялся — сервер мог уже применить «A»
+  q.add({ opId: 'op-a0000002', type: 'entry', date: 'd', pairId: 'A', baseVersion: 2, patch: { hw: 'AB' } });
+  const items = q.list();
+  assert.equal(items.length, 2);
+  assert.deepEqual(items[0].patch, { hw: 'A' });
+  assert.deepEqual(items[1].patch, { hw: 'AB' });
+});
+
+test('то же после перезагрузки страницы: отметка «отправлялась» сохраняется', () => {
+  const storage = mem();
+  const q = createQueue(storage);
+  q.add({ opId: 'op-b0000001', type: 'entry', date: 'd', pairId: 'A', baseVersion: 0, patch: { hw: 'A' } });
+  q.takeBatch();
+  const q2 = createQueue(storage);         // перезагрузка
+  q2.add({ opId: 'op-b0000002', type: 'entry', date: 'd', pairId: 'A', baseVersion: 0, patch: { hw: 'AB' } });
+  assert.equal(q2.list().length, 2);
+});
+
+test('в одну отправку — не больше одной операции на пару', () => {
+  const q = createQueue(mem());
+  q.add({ opId: 'op-c0000001', type: 'entry', date: 'd', pairId: 'A', baseVersion: 0, patch: { hw: 'A' } });
+  q.takeBatch(); q.release(['op-c0000001']);
+  q.add({ opId: 'op-c0000002', type: 'entry', date: 'd', pairId: 'A', baseVersion: 0, patch: { hw: 'AB' } });
+  q.add({ opId: 'op-c0000003', type: 'entry', date: 'd', pairId: 'B', baseVersion: 0, patch: { hw: 'B' } });
+  const batch = q.takeBatch();
+  assert.deepEqual(batch.map((o) => o.opId), ['op-c0000001', 'op-c0000003']);
+});
+
+test('«Отменить» возвращает и отметку «ДЗ нет»; повторная пометка не отменяется', () => {
+  const data = { entries: [{ date: 'd', pairId: 'A', hw: '', links: [], noHw: true, version: 1 }], dayNotes: [{ date: 'd', text: 'Сменка' }] };
+  const undo = inverseOf(data, { type: 'entry', date: 'd', pairId: 'A', patch: { hw: 'Доклады' } });
+  assert.deepEqual(undo.patch, { hw: '', noHw: true });
+  assert.equal(inverseOf(data, { type: 'note.add', date: 'd', text: 'Сменка' }), null);
+  assert.equal(inverseOf(data, { type: 'note.remove', date: 'd', text: 'Нет такой' }), null);
+});
+
+test('две вкладки не затирают очередь друг друга', () => {
+  const storage = mem();
+  const tab1 = createQueue(storage); const tab2 = createQueue(storage);
+  tab1.add({ opId: 'op-d0000001', type: 'note.add', date: 'd', text: 'x' });
+  tab2.add({ opId: 'op-d0000002', type: 'note.add', date: 'd', text: 'y' });
+  assert.deepEqual(createQueue(storage).list().map((o) => o.opId).sort(), ['op-d0000001', 'op-d0000002']);
+  tab2.remove('op-d0000002');
+  tab1.add({ opId: 'op-d0000003', type: 'note.add', date: 'd', text: 'z' }); // tab1 ещё «помнит» y? — нет, y не воскресает
+  assert.deepEqual(createQueue(storage).list().map((o) => o.opId).sort(), ['op-d0000001', 'op-d0000003']);
+});
+
+test('при конфликте ожидающие правки пары забираются вместе с ним', () => {
+  const q = createQueue(mem());
+  q.add({ opId: 'op-e0000001', type: 'entry', date: 'd', pairId: 'A', baseVersion: 0, patch: { hw: 'A' } });
+  const [sent] = q.takeBatch();
+  q.add({ opId: 'op-e0000002', type: 'entry', date: 'd', pairId: 'A', baseVersion: 0, patch: { links: ['https://x.example'] } });
+  q.remove(sent.opId);
+  const pending = q.takePendingFor(sent);
+  assert.equal(pending.length, 1);
+  assert.equal(q.size(), 0);
 });

@@ -22,7 +22,7 @@ const memory = (() => { const m = new Map(); return { getItem: (k) => m.get(k) ?
 
 const S = {
   data: null, name: null, code: null, monday: null,
-  status: 'idle', sending: false, openLectures: {},
+  status: 'idle', sending: false, fresh: false, refreshing: false, openLectures: {},
   queue: createQueue(local || memory),
 };
 
@@ -39,7 +39,7 @@ function forgetCode() {
 
 async function tryLogin(code) {
   const res = await postRequest(API_URL, { action: 'login', code });
-  if (!res.ok) return { error: res.message || 'Код не подошёл.' };
+  if (!res.ok) return { error: res.message || 'Код не подошёл.', kind: res.error };
   return { name: res.name };
 }
 
@@ -92,7 +92,11 @@ function withQueue(fresh) {
 function reload() {
   return loadSchedule({
     apiUrl: API_URL, storage: local || null,
-    onData: (data) => { S.data = withQueue(JSON.parse(JSON.stringify(data))); render(); },
+    onData: (data, info) => {
+      S.data = withQueue(JSON.parse(JSON.stringify(data)));
+      S.fresh = info.source === 'network'; // сохранённая в телефоне копия может быть старой — версии в ней устарели
+      render({ sheet: false }); flush();
+    },
     onStatus: (status) => {
       if (!S.data) {
         $('app').replaceChildren(h('div', { class: 'empty' }, h('b', { text: 'Не удалось загрузить неделю' }),
@@ -118,44 +122,82 @@ function commit(op, label, { undoable = true, rerenderSheet = true } = {}) {
   S.queue.add(full);
   render({ sheet: rerenderSheet });
   flush();
-  if (label) toast(label, undoable ? () => commit(undo, 'Изменение отменено', { undoable: false }) : null);
+  if (label) toast(label, undoable && undo ? () => commit(undo, 'Изменение отменено', { undoable: false }) : null);
 }
 
+// повтор после ошибки — с нарастающей паузой: 2, 4, 8 … 60 секунд (не долбим сервер)
+let retryDelay = 0, retryTimer = null;
+function scheduleRetry() {
+  retryDelay = Math.min(retryDelay ? retryDelay * 2 : 2000, 60000);
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => { retryTimer = null; flush(); }, retryDelay);
+}
+function retryNow() { retryDelay = 0; clearTimeout(retryTimer); retryTimer = null; flush(); }
+
 async function flush() {
-  if (S.sending || !S.code) return;
+  if (S.sending || !S.code || !S.data) return; // без загруженной недели ответ сервера некуда применить
+  // неделя загружена из старой копии (открыли без сети) — сначала свежие данные, иначе версии устарели
+  // и каждая правка получит ложный «конфликт»; flush вызовется снова из onData
+  if (!S.fresh) { if (!S.refreshing) { S.refreshing = true; reload().finally(() => { S.refreshing = false; }); } return; }
   const batch = S.queue.takeBatch();
   if (!batch.length) return;
   S.sending = true; setStatus('saving');
   const ids = batch.map((o) => o.opId);
+  let ok = false;
   try {
     const res = await postRequest(API_URL, { code: S.code, ops: batch });
     if (!res.ok) {
       S.queue.release(ids);
-      if (res.error === 'bad-code' || res.error === 'locked') {
+      if (res.error === 'bad-code') {
         forgetCode(); S.code = null; S.name = null;
-        renderLogin(res.error === 'locked' ? res.message : 'Ваш код больше не действует. Напишите Еремею. Несохранённые правки остались на телефоне — войдите с новым кодом.');
+        renderLogin('Ваш код больше не действует. Напишите Еремею. Несохранённые правки остались на телефоне — войдите с новым кодом.');
         return;
       }
-      setStatus('error'); return;
+      if (res.error === 'locked') { toast(res.message); setStatus('error'); scheduleRetry(); return; }
+      setStatus('error'); scheduleRetry(); return;
     }
     for (const r of res.results) {
       const op = batch.find((o) => o.opId === r.opId);
       if (!op) continue;
       if (r.ok) applyResult(S.data, S.queue, op, r);
-      else if (r.error === 'conflict') { S.queue.remove(op.opId); showConflict(op, r.current); }
-      else { S.queue.remove(op.opId); toast('Не сохранилось: ' + (r.message || 'ошибка данных')); reload(); }
+      else if (r.error === 'conflict') {
+        S.queue.remove(op.opId);
+        // правки этой пары, ждущие за конфликтной, — часть «моего варианта»
+        const pending = S.queue.takePendingFor(op);
+        const patch = Object.assign({}, op.patch, ...pending.map((x) => x.patch));
+        conflicts.push({ op: { ...op, patch }, current: r.current || null });
+      } else { S.queue.remove(op.opId); showRejected(op, r.message); }
     }
+    ok = true; retryDelay = 0;
     setStatus(S.queue.size() ? 'saving' : 'saved');
     render({ sheet: false });
+    nextConflict();
   } catch {
-    S.queue.release(ids); setStatus('offline');
+    S.queue.release(ids); setStatus('offline'); scheduleRetry();
   } finally {
     S.sending = false;
-    if (S.queue.size() && S.status !== 'offline') setTimeout(flush, 300);
+    if (ok && S.queue.size()) setTimeout(flush, 300); // следующая пачка (например, правка, ждавшая свою пару)
   }
 }
-window.addEventListener('online', () => flush());
-setInterval(() => { if (S.queue.size()) flush(); }, 20000);
+window.addEventListener('online', () => { if (!S.fresh) reload(); else retryNow(); });
+setInterval(() => { if (S.queue.size() && !retryTimer && !S.sending) flush(); }, 20000);
+
+/** Сервер отклонил правку (неверные данные): показываем причину и сам текст, чтобы его не потерять. */
+function showRejected(op, message) {
+  const text = op.type === 'entry'
+    ? [op.patch.hw, ...(op.patch.links || [])].filter(Boolean).join('\n')
+    : op.text || '';
+  const close = () => { $('dialog').replaceChildren(); reload(); };
+  const copyBtn = h('button', { type: 'button', class: 'btn btn-secondary', text: 'Скопировать текст', onclick: async () => {
+    try { await navigator.clipboard.writeText(text); copyBtn.textContent = 'Скопировано'; } catch { copyBtn.textContent = 'Выделите текст вручную'; }
+  } });
+  $('dialog').replaceChildren(h('div', { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'rj-title' }, h('div', { class: 'box' },
+    h('h2', { id: 'rj-title', text: 'Правка не сохранилась' }),
+    h('p', { style: 'margin:0', text: 'Причина: ' + (message || 'ошибка данных') + '.' }),
+    text ? h('div', { class: 'variant', style: 'white-space:pre-wrap', text }) : null,
+    h('div', { class: 'cols' }, text ? copyBtn : null, h('button', { type: 'button', class: 'btn btn-primary', onclick: close, text: 'Понятно' })))));
+  $('dialog').querySelector('button').focus();
+}
 
 // ---------------- общие куски интерфейса ----------------
 let toastTimer = null;
@@ -240,6 +282,7 @@ function hwBlock(p) {
       linkErr.textContent = 'Ссылка должна начинаться с https:// — скопируйте её в Telegram («Копировать ссылку»).';
       linkInput.setAttribute('aria-invalid', 'true'); linkInput.focus(); return;
     }
+    if (url.length > 500) { linkErr.textContent = 'Ссылка длиннее 500 знаков. Скопируйте короткую ссылку на сообщение в Telegram.'; return; }
     const current = findPair(p.date, p.id);
     if (current.links.length >= 10) { linkErr.textContent = 'Не больше 10 ссылок на пару.'; return; }
     flushText();
@@ -270,7 +313,7 @@ function pairSheet(date, id) {
     h('label', { class: 'check' },
       h('input', {
         type: 'checkbox', id: 'nohw', checked: p.noHw && !hasHw(p), disabled: hasHw(p),
-        onchange: (e) => commit({ type: 'entry', date, pairId: id, patch: { noHw: e.target.checked } }, e.target.checked ? 'Отмечено: ДЗ нет' : 'Отметка снята'),
+        onchange: (e) => { flushText(); commit({ type: 'entry', date, pairId: id, patch: { noHw: e.target.checked } }, e.target.checked ? 'Отмечено: ДЗ нет' : 'Отметка снята'); },
       }),
       hasHw(p) ? 'ДЗ нет — недоступно: ДЗ уже вписано' : 'ДЗ нет (группа увидит «ДЗ нет»)')));
   return out;
@@ -335,20 +378,34 @@ function notesSheet(date) {
 }
 
 // ---------------- конфликт двух правок ----------------
+const conflicts = [];               // показываем по одному, чтобы выбор не потерялся
+let conflictOpen = false;
+function nextConflict() {
+  if (conflictOpen || !conflicts.length) return;
+  const { op, current } = conflicts.shift();
+  conflictOpen = true;
+  showConflict(op, current);
+}
 function showConflict(op, current) {
-  const mine = { ...findPair(op.date, op.pairId), ...op.patch };
+  const pair = findPair(op.date, op.pairId) || {};
+  const mine = { ...pair, ...op.patch };
   const theirs = current || { hw: '', links: [] };
   const who = theirs.by || 'другой активист';
-  const close = () => $('dialog').replaceChildren();
   const entry = () => S.data.entries.find((x) => x.date === op.date && x.pairId === op.pairId);
+  const done = () => { $('dialog').replaceChildren(); conflictOpen = false; nextConflict(); };
   const describe = (x) => [x.hw || '(без подписи)', ...(x.links || []), x.noHw ? '«ДЗ нет»' : ''].filter(Boolean).join('\n');
-  const keepTheirs = () => { close(); const e = entry(); if (e && current) Object.assign(e, current); render(); toast('Оставлен вариант: ' + who); };
+  const setServerVersion = () => { const e = entry(); if (e) e.version = current ? current.version || 0 : 0; };
+  const keepTheirs = () => {
+    if (current) { const e = entry(); if (e) Object.assign(e, current); }
+    else S.data.entries = S.data.entries.filter((x) => !(x.date === op.date && x.pairId === op.pairId)); // на сервере записи нет
+    done(); render(); toast('Оставлен вариант: ' + who);
+  };
   const keepMine = () => {
-    close(); const e = entry(); if (e) e.version = current ? current.version : 0;
+    setServerVersion(); done();
     commit({ type: 'entry', date: op.date, pairId: op.pairId, patch: op.patch }, 'Сохранён ваш вариант', { undoable: false });
   };
   const mergeLinks = () => {
-    close(); const e = entry(); if (e) e.version = current ? current.version : 0;
+    setServerVersion(); done();
     const links = [...new Set([...(theirs.links || []), ...(mine.links || [])])].slice(0, 10);
     commit({ type: 'entry', date: op.date, pairId: op.pairId, patch: { ...op.patch, links } }, 'Ссылки объединены', { undoable: false });
   };
@@ -456,7 +513,7 @@ function renderBar() {
     error: ['error', 'Не сохранилось. Повторю автоматически'],
   }[S.status];
   bar.replaceChildren(h('div', { class: 'inner' }, h('div', { class: 'save ' + cls, role: 'status', text }),
-    S.status === 'error' || S.status === 'offline' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => flush(), text: 'Повторить' }) : null));
+    S.status === 'error' || S.status === 'offline' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => retryNow(), text: 'Повторить' }) : null));
 }
 
 function render({ sheet = true } = {}) {
@@ -468,7 +525,7 @@ function render({ sheet = true } = {}) {
 // ---------------- запуск ----------------
 function start() {
   S.monday = S.monday || defaultMonday();
-  reload().then(() => flush());
+  reload();
 }
 
 async function boot() {
@@ -482,7 +539,11 @@ async function boot() {
   S.code = code;
   try {
     const r = await tryLogin(code);
-    if (r.error) { forgetCode(); S.code = null; renderLogin(r.error); return; }
+    if (r.error) {
+      // забываем код только если он неверный; при временной блокировке он ещё пригодится
+      if (r.kind === 'bad-code') { forgetCode(); S.code = null; }
+      renderLogin(r.error); return;
+    }
     S.name = r.name; start();
   } catch {
     // нет сети: пускаем к сохранённой неделе, правки встанут в очередь и уйдут позже
@@ -490,4 +551,8 @@ async function boot() {
   }
 }
 boot();
-document.addEventListener('visibilitychange', () => { if (!document.hidden && S.name && !S.queue.size()) reload(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { flushText(); return; }               // свернули приложение — сохранить набранное
+  if (S.name && !S.queue.size()) reload();
+});
+window.addEventListener('pagehide', flushText);
