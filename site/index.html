@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Расписание 322</title>
+</head>
+<body>
+  <!-- Шаг 1: временная страница для проверки логики. Полный интерфейс — шаг 2. -->
+  <main>
+    <h1>Расписание 322</h1>
+    <label for="date">Дата</label>
+    <input id="date" name="date" type="date" value="2026-10-27">
+    <p id="half"></p>
+    <ol id="pairs"></ol>
+    <p id="error" role="alert"></p>
+  </main>
+  <script type="module">
+    import { buildDay } from './src/schedule.js';
+
+    const $ = (id) => document.getElementById(id);
+    const TYPE = { lecture: 'лекция', seminar: 'семинар', other: 'занятие' };
+
+    async function loadData() {
+      const [seed, demo] = await Promise.all(
+        ['data/seed.json', 'data/demo-entries.json'].map((u) => fetch(u).then((r) => r.json())));
+      return { ...seed, ...demo };
+    }
+
+    function render(data) {
+      const day = buildDay($('date').value, data);
+      $('half').textContent = day.half === 'top' ? 'верхняя неделя' : 'нижняя неделя';
+      $('pairs').replaceChildren(...day.pairs.map((p) => {
+        const li = document.createElement('li');
+        // текст — только через textContent: защита от внедрения чужого кода
+        li.textContent = `${p.numbers.join('')} · ${p.start}–${p.end} · ауд. ${p.room} · ${p.subject} (${TYPE[p.type]})`
+          + (p.hw ? ` — ДЗ: ${p.hw}` : '') + (p.links.length ? ` [ссылок: ${p.links.length}]` : '');
+        return li;
+      }));
+    }
+
+    loadData()
+      .then((data) => { render(data); $('date').addEventListener('change', () => render(data)); })
+      .catch(() => { $('error').textContent = 'Не удалось загрузить расписание. Откройте страницу через локальный сервер.'; });
+  </script>
+</body>
+</html>
