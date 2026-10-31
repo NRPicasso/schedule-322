@@ -116,6 +116,193 @@ function doGet() {
   return ContentService.createTextOutput(body).setMimeType(ContentService.MimeType.JSON);
 }
 
+// ---------- запись (редактор активистов) ----------
+
+var CODES_PROP = 'CODES';          // Script Properties: {sha256(код): имя}
+var FAIL_KEY = 'login-fails';
+var LOCK_KEY = 'login-locked';
+var MAX_FAILS = 10;                // 10 неверных кодов подряд …
+var LOCK_SECONDS = 600;            // … — пауза 10 минут для всех (IP в Apps Script не виден)
+var LIMITS = { hw: 5000, link: 500, links: 10, note: 200, notesPerDay: 10, opsPerRequest: 50 };
+var ACTIVISTS = ['Активист 1', 'Активист 2', 'Еремей'];
+var DATE_RE = /^20\d\d-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+function json_(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
+
+/** Хеш кода: в настройках скрипта лежат только хеши, сами коды нигде не хранятся. */
+function hashCode_(code) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, 'raspisanie-322:' + String(code || '').trim(), Utilities.Charset.UTF_8);
+  return bytes.map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+}
+
+/** Проверка одной операции. Возвращает текст ошибки или null. */
+function validateOp_(op, pairIds) {
+  if (!op || typeof op !== 'object') return 'пустая операция';
+  if (typeof op.opId !== 'string' || !/^[\w-]{8,64}$/.test(op.opId)) return 'нет номера операции';
+  if (!DATE_RE.test(String(op.date))) return 'неверная дата';
+  if (op.type === 'entry') {
+    if (!pairIds[op.pairId]) return 'такой пары нет в шаблоне';
+    if (typeof op.baseVersion !== 'number' || op.baseVersion < 0) return 'нет версии';
+    var p = op.patch;
+    if (!p || typeof p !== 'object') return 'нет изменений';
+    for (var k in p) if (['hw', 'links', 'noHw'].indexOf(k) < 0) return 'поле нельзя менять: ' + k;
+    if ('hw' in p && (typeof p.hw !== 'string' || p.hw.length > LIMITS.hw)) return 'текст ДЗ длиннее 5000 знаков';
+    if ('noHw' in p && typeof p.noHw !== 'boolean') return 'неверная отметка «ДЗ нет»';
+    if ('links' in p) {
+      if (!Array.isArray(p.links) || p.links.length > LIMITS.links) return 'не больше 10 ссылок';
+      for (var i = 0; i < p.links.length; i++) {
+        var u = p.links[i];
+        if (typeof u !== 'string' || u.length > LIMITS.link || !/^https?:\/\/[^\s]+$/i.test(u)) return 'ссылка должна начинаться с http:// или https://';
+      }
+    }
+    return null;
+  }
+  if (op.type === 'note.add' || op.type === 'note.remove') {
+    if (typeof op.text !== 'string' || !op.text.trim() || op.text.length > LIMITS.note) return 'пометка — от 1 до 200 знаков';
+    return null;
+  }
+  return 'неизвестная операция';
+}
+
+/**
+ * Применяет операции к данным (без Google — проверяется тестами).
+ * state: {entries, dayNotes}; meta: {name, now}; seen(opId) → прошлый результат или null.
+ */
+function processOps_(state, ops, pairIds, meta, seen) {
+  var results = [], logs = [];
+  ops.forEach(function (op) {
+    var prev = seen(op && op.opId);
+    if (prev) { results.push(prev); return; } // повторная отправка той же операции — без дублей
+    var err = validateOp_(op, pairIds);
+    if (err) { results.push({ opId: op && op.opId, ok: false, error: 'invalid', message: err }); return; }
+    if (op.type === 'entry') {
+      var idx = -1;
+      for (var i = 0; i < state.entries.length; i++) if (state.entries[i].date === op.date && state.entries[i].pairId === op.pairId) { idx = i; break; }
+      var row = idx >= 0 ? state.entries[idx] : null;
+      var version = row ? (row.version || 0) : 0;
+      if (op.baseVersion !== version) {
+        results.push({ opId: op.opId, ok: false, error: 'conflict', current: row });
+        return;
+      }
+      var before = row ? JSON.parse(JSON.stringify(row)) : null;
+      var next = row ? JSON.parse(JSON.stringify(row)) : { date: op.date, pairId: op.pairId, links: [] };
+      for (var k in op.patch) next[k] = op.patch[k];
+      if (next.hw || (next.links && next.links.length)) next.noHw = false; // ДЗ вписано — отметка «нет» снимается
+      next.version = version + 1; next.by = meta.name; next.updatedAt = meta.now;
+      if (idx >= 0) state.entries[idx] = next; else state.entries.push(next);
+      results.push({ opId: op.opId, ok: true, version: next.version, entry: next });
+      logs.push({ at: meta.now, by: meta.name, action: 'ДЗ', sheet: SHEETS.entries.name, key: op.date + ' ' + op.pairId, before: before, after: next, opId: op.opId });
+      return;
+    }
+    var notesOfDay = state.dayNotes.filter(function (n) { return n.date === op.date; });
+    if (op.type === 'note.add') {
+      var exists = notesOfDay.some(function (n) { return n.text === op.text.trim(); });
+      if (!exists) {
+        if (notesOfDay.length >= LIMITS.notesPerDay) { results.push({ opId: op.opId, ok: false, error: 'invalid', message: 'не больше 10 пометок в день' }); return; }
+        state.dayNotes.push({ date: op.date, text: op.text.trim(), by: meta.name, updatedAt: meta.now });
+      }
+    } else {
+      state.dayNotes = state.dayNotes.filter(function (n) { return !(n.date === op.date && n.text === op.text); });
+    }
+    results.push({ opId: op.opId, ok: true });
+    logs.push({ at: meta.now, by: meta.name, action: op.type === 'note.add' ? 'пометка +' : 'пометка −', sheet: SHEETS.dayNotes.name, key: op.date, before: null, after: op.text, opId: op.opId });
+  });
+  return { state: state, results: results, logs: logs };
+}
+
+function writeObjects_(key, items) {
+  var def = SHEETS[key];
+  var sh = SpreadsheetApp.getActive().getSheetByName(def.name);
+  var width = def.cols.length;
+  var last = sh.getLastRow();
+  if (last > 1) sh.getRange(2, 1, last - 1, width).clearContent();
+  if (items.length) sh.getRange(2, 1, items.length, width).setNumberFormat('@').setValues(objectsToRows_(items, def.cols));
+}
+
+function handleRequest_(req) {
+  var cache = CacheService.getScriptCache();
+  if (cache.get(LOCK_KEY)) return { ok: false, error: 'locked', message: 'Слишком много неверных попыток. Попробуйте через 10 минут или напишите Еремею.' };
+  var codes = JSON.parse(PropertiesService.getScriptProperties().getProperty(CODES_PROP) || '{}');
+  var name = codes[hashCode_(req && req.code)];
+  if (!name) {
+    var fails = Number(cache.get(FAIL_KEY) || 0) + 1;
+    if (fails >= MAX_FAILS) { cache.put(LOCK_KEY, '1', LOCK_SECONDS); cache.remove(FAIL_KEY); }
+    else cache.put(FAIL_KEY, String(fails), LOCK_SECONDS);
+    return { ok: false, error: 'bad-code', message: 'Код не подошёл. Проверьте цифры.' };
+  }
+  cache.remove(FAIL_KEY);
+  if (req.action === 'login') return { ok: true, name: name };
+  var ops = Array.isArray(req.ops) ? req.ops.slice(0, LIMITS.opsPerRequest) : [];
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000); // две правки одновременно выполняются по очереди
+  try {
+    var pairIds = {};
+    rowsToObjects_(readSheet_(SHEETS.template.name), SHEETS.template.cols).forEach(function (t) { pairIds[t.id] = true; });
+    var state = {
+      entries: rowsToObjects_(readSheet_(SHEETS.entries.name), SHEETS.entries.cols),
+      dayNotes: rowsToObjects_(readSheet_(SHEETS.dayNotes.name), SHEETS.dayNotes.cols)
+    };
+    var meta = { name: name, now: Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd'T'HH:mm:ssXXX") };
+    var seen = function (id) { var v = id && cache.get('op:' + id); return v ? JSON.parse(v) : null; };
+    var out = processOps_(state, ops, pairIds, meta, seen);
+    if (out.logs.length) {
+      writeObjects_('entries', out.state.entries);
+      writeObjects_('dayNotes', out.state.dayNotes);
+      var logSheet = SpreadsheetApp.getActive().getSheetByName(SHEETS.log.name);
+      out.logs.forEach(function (l) {
+        logSheet.appendRow([l.at, l.by, l.action, l.sheet, l.key, JSON.stringify(l.before), JSON.stringify(l.after), l.opId]);
+      });
+      cache.remove(CACHE_KEY);
+    }
+    out.results.forEach(function (r) { if (r.ok && r.opId) cache.put('op:' + r.opId, JSON.stringify(r), 21600); });
+    return { ok: true, name: name, results: out.results };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** POST-запрос редактора. Тело — JSON как text/plain (так браузер не делает лишний предварительный запрос). */
+function doPost(e) {
+  var req;
+  try { req = JSON.parse(e.postData.contents); } catch (err) { return json_({ ok: false, error: 'bad-request', message: 'Не удалось разобрать запрос.' }); }
+  try { return json_(handleRequest_(req)); }
+  catch (err) { return json_({ ok: false, error: 'server', message: 'Сервер занят или произошла ошибка. Изменение сохранено на телефоне и будет отправлено позже.' }); }
+}
+
+/** 6 цифр из случайного UUID (Utilities.getUuid надёжнее Math.random). */
+function randomCode_() {
+  return String(100000 + parseInt(Utilities.getUuid().replace(/-/g, '').slice(0, 12), 16) % 900000);
+}
+
+/** Временный код «Проверка» для тестов редактора; удаляется removeTestCode(). */
+function createTestCode() {
+  var props = PropertiesService.getScriptProperties();
+  var codes = JSON.parse(props.getProperty(CODES_PROP) || '{}');
+  var code = randomCode_();
+  codes[hashCode_(code)] = 'Проверка';
+  props.setProperty(CODES_PROP, JSON.stringify(codes));
+  Logger.log('Тестовый код: ' + code);
+}
+function removeTestCode() {
+  var props = PropertiesService.getScriptProperties();
+  var codes = JSON.parse(props.getProperty(CODES_PROP) || '{}');
+  Object.keys(codes).forEach(function (h) { if (codes[h] === 'Проверка') delete codes[h]; });
+  props.setProperty(CODES_PROP, JSON.stringify(codes));
+  Logger.log('Тестовый код удалён');
+}
+
+/** Владелец запускает вручную: выдаёт новые коды активистам (старые перестают работать) и пишет их в журнал выполнения. */
+function createActivistCodes() {
+  var codes = {}, lines = [];
+  ACTIVISTS.forEach(function (name) {
+    var code = randomCode_();
+    codes[hashCode_(code)] = name;
+    lines.push(name + ': ' + code);
+  });
+  PropertiesService.getScriptProperties().setProperty(CODES_PROP, JSON.stringify(codes));
+  Logger.log('Новые коды (передайте лично, старые больше не действуют):\n' + lines.join('\n'));
+}
+
 // ---------- первое заполнение таблицы ----------
 
 function objectsToRows_(items, cols) {

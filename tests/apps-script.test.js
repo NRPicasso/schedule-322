@@ -64,3 +64,64 @@ test('пустые строки пропускаются, «да» в флажк
   assert.equal(last.noHw, true);
   assert.deepEqual([...last.links], ['https://a.example/1', 'https://a.example/2']);
 });
+
+// ---------- запись ----------
+vm.runInContext('this.w = { processOps_, validateOp_ };', ctx);
+const { processOps_ } = ctx.w;
+const pairIds = Object.fromEntries(seed.template.map((t) => [t.id, true]));
+const meta = { name: 'Активист 1', now: '2026-11-01T12:00:00+03:00' };
+const fresh = () => ({ entries: JSON.parse(JSON.stringify(history.entries)), dayNotes: [] });
+const noSeen = () => null;
+const op = (o) => ({ opId: 'op-' + Math.random().toString(36).slice(2, 12), type: 'entry', date: '2026-11-03', pairId: 'TUE-1140-bot', baseVersion: 0, patch: { hw: 'Доклады' }, ...o });
+
+test('новая запись ДЗ: версия 1, кто и когда, строка в журнал', () => {
+  const out = processOps_(fresh(), [op()], pairIds, meta, noSeen);
+  const r = out.results[0];
+  assert.equal(r.ok, true);
+  assert.equal(r.version, 1);
+  assert.equal(r.entry.by, 'Активист 1');
+  assert.equal(out.logs.length, 1);
+  assert.equal(out.state.entries.at(-1).hw, 'Доклады');
+});
+
+test('правка поверх чужой версии — конфликт, данные не меняются', () => {
+  const s = fresh();
+  processOps_(s, [op()], pairIds, meta, noSeen);                       // версия стала 1
+  const out = processOps_(s, [op({ baseVersion: 0, patch: { hw: 'Другое' } })], pairIds, { ...meta, name: 'Активист 2' }, noSeen);
+  assert.equal(out.results[0].ok, false);
+  assert.equal(out.results[0].error, 'conflict');
+  assert.equal(out.results[0].current.hw, 'Доклады');
+  assert.equal(out.logs.length, 0);
+});
+
+test('повторная отправка той же операции не создаёт дубль', () => {
+  const s = fresh(); const o = op();
+  const first = processOps_(s, [o], pairIds, meta, noSeen).results[0];
+  const again = processOps_(s, [o], pairIds, meta, (id) => (id === o.opId ? first : null));
+  assert.equal(again.results[0], first);
+  assert.equal(again.logs.length, 0);
+  assert.equal(s.entries.filter((e) => e.date === '2026-11-03').length, 1);
+});
+
+test('плохие данные отклоняются с понятной причиной', () => {
+  const bad = [
+    op({ pairId: 'NOPE' }), op({ date: '2026-13-01' }), op({ patch: { room: '101' } }),
+    op({ patch: { links: ['javascript:alert(1)'] } }), op({ patch: { hw: 'x'.repeat(5001) } }), op({ opId: '!' }),
+  ];
+  const out = processOps_(fresh(), bad, pairIds, meta, noSeen);
+  assert.deepEqual([...out.results].map((r) => r.error), Array(6).fill('invalid'));
+  assert.match(out.results[3].message, /http/);
+  assert.equal(out.logs.length, 0);
+});
+
+test('«ДЗ нет» снимается, когда ДЗ вписано; пометки дня добавляются без повторов и удаляются', () => {
+  const s = fresh();
+  processOps_(s, [op({ patch: { noHw: true } })], pairIds, meta, noSeen);
+  const r = processOps_(s, [op({ baseVersion: 1, patch: { hw: 'Доклады' } })], pairIds, meta, noSeen).results[0];
+  assert.equal(r.entry.noHw, false);
+  const n = (type, text) => ({ opId: 'note-' + Math.random().toString(36).slice(2, 12), type, date: '2026-11-04', text });
+  processOps_(s, [n('note.add', 'Сменка'), n('note.add', 'Сменка'), n('note.add', 'КСУ')], pairIds, meta, noSeen);
+  assert.deepEqual([...s.dayNotes].map((x) => x.text), ['Сменка', 'КСУ']);
+  const out = processOps_(s, [n('note.remove', 'Сменка')], pairIds, meta, noSeen);
+  assert.deepEqual([...out.state.dayNotes].map((x) => x.text), ['КСУ']);
+});
