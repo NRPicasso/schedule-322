@@ -139,7 +139,7 @@ textarea.input { resize: vertical; min-height: 84px; }
 .check input { width: 20px; height: 20px; accent-color: var(--accent); }
 .chip { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; white-space: nowrap; font-size: var(--fs-s); font-weight: 500; }
 .chips { display: flex; gap: var(--sp-2); overflow-x: auto; padding-bottom: 4px; }
-.days { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: var(--sp-2); }
+.days { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; margin-top: var(--sp-2); }
 .days button { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; min-height: 52px; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 2px; }
 .days .d { font-family: var(--f-display); font-size: .7rem; font-weight: 700; }
 .days .n { font-family: var(--f-mono); font-size: .95rem; font-weight: 700; }
@@ -233,7 +233,8 @@ select.input { appearance: auto; }
 .btn-danger.armed { background: var(--stamp-cancel); color: var(--surface); }
 /* шаг 7: текст для Telegram */
 .tg-preview { font-family: var(--f-body); font-size: .95rem; line-height: 1.45; white-space: pre-wrap; resize: vertical; background: var(--paper); }
-.chip.on { border-color: var(--ok); color: var(--ok); }
+.chip.done { border-color: var(--ok); color: var(--ok); }
+.chip.changed { border-color: var(--warn-text); color: var(--warn-text); background: var(--warn-bg); }
 .chip[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 1px; }
 .btn.done { border-color: var(--ok); color: var(--ok); }
 .btn-primary.done { background: var(--ok); color: var(--surface); }

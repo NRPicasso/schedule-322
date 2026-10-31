@@ -1,5 +1,5 @@
 // Экран для группы: Сегодня / Завтра / Неделя / ДЗ.
-import { buildDay, weekDates, mondayOf, addDays, weekday } from './schedule.js';
+import { buildDay, studyDates, mondayOf, addDays, weekday } from './schedule.js';
 import { defaultView, nextStudyDay, nowAndNext, isRecent } from './time.js';
 import { WEEKDAYS, WEEKDAYS_SHORT, dayMonth, monthName, dayMonthWeekday, toDay, weekRange, shortTime, longDay } from './format.js';
 import { h, icons, halfLabel, tile, fullName, safeLink } from './dom.js';
@@ -112,7 +112,7 @@ export function createGroupView({ top, app }) {
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Предыдущая неделя', onclick: () => show({ weekMonday: addDays(monday, -7) }) }, icons.prev()),
       h('div', { class: 't' }, h('h1', { class: 'display', text: weekRange(monday) }), h('div', { class: 'xs muted' }, halfLabel(buildDay(monday, data).half))),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Следующая неделя', onclick: () => show({ weekMonday: addDays(monday, 7) }) }, icons.next()))];
-    const days = weekDates(monday).map((d) => buildDay(d, data)).filter((d) => d.pairs.length || d.notes.length);
+    const days = studyDates(monday, data).map((d) => buildDay(d, data)).filter((d) => d.pairs.length || d.notes.length);
     if (!days.length) {
       out.push(emptyBox('На этой неделе пар нет', '', h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => show({ weekMonday: addDays(monday, 7) }), text: 'Следующая неделя' })));
     }
@@ -129,7 +129,7 @@ export function createGroupView({ top, app }) {
   function hwScreen() {
     const { data, now } = state;
     const monday = mondayOf(weekday(now.date) === 0 ? addDays(now.date, 1) : now.date);
-    const dates = [...weekDates(monday), ...weekDates(addDays(monday, 7))].filter((d) => d >= now.date);
+    const dates = [...studyDates(monday, data), ...studyDates(addDays(monday, 7), data)].filter((d) => d >= now.date);
     const groups = dates
       .map((d) => ({ d, items: buildDay(d, data).pairs.filter((p) => p.numbers.length && (p.hw || p.links.length)) }))
       .filter((g) => g.items.length);

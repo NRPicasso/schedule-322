@@ -27,6 +27,15 @@ export function mondayOf(iso) {
 export function weekDates(monday) {
   return [0, 1, 2, 3, 4, 5].map((i) => addDays(monday, i));
 }
+/**
+ * Учебные дни недели для показа: пн–сб всегда, воскресенье — только если в нём что-то есть
+ * (перенос или доп. пару на воскресенье поставить можно — она не должна пропадать).
+ */
+export function studyDates(monday, data) {
+  const sunday = addDays(monday, 6);
+  const sun = buildDay(sunday, data);
+  return sun.pairs.length || sun.notes.length ? [...weekDates(monday), sunday] : weekDates(monday);
+}
 export function toMinutes(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
@@ -95,7 +104,7 @@ function fromExtra(x, data) {
     id: x.id, date: x.date, kind: 'extra',
     subject: x.subject || base.subject || '', tgName: x.tgName || base.tgName || x.subject || '',
     type: x.type || base.type || 'other', slots: x.slots || base.slots || 1,
-    start: x.start, end: x.end, room: x.room || base.room || '', teacher: x.teacher || base.teacher || '', note: '',
+    start: x.start, end: x.end, room: x.room || base.room || '', teacher: x.teacher || base.teacher || '', note: src ? base.note || '' : '',
     changed: {}, ruledFrom: {},
     hw: x.hw || '', links: x.links || [], noHw: !!x.noHw, reason: '',
     updatedBy: x.by, updatedAt: x.updatedAt,

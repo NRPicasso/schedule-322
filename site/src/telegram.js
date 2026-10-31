@@ -10,7 +10,7 @@
 //   https://t.me/c/…
 //
 // Чистые функции: получают данные, возвращают строку — проверяются тестами без браузера.
-import { buildDay, weekDates, weekday, parseDate } from './schedule.js';
+import { buildDay, studyDates, weekday, parseDate, addDays } from './schedule.js';
 import { WEEKDAYS, dayMonth, dayMonthWeekday, longDay, shortTime } from './format.js';
 
 const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹';
@@ -42,7 +42,8 @@ export function pairLines(p) {
     const m = p.movedTo;
     return [timeLine(p), `➡️ ${pairName(p)} — перенесена на ${dayMonthWeekday(m.date)}, ${shortTime(m.start)}, ауд. ${m.room}`];
   }
-  const mark = p.status === 'moved-here' ? ` (перенос с ${dayMonthWeekday(p.movedFrom)})` : p.status === 'extra' ? ' (доп. пара)' : '';
+  // без вложенных скобок: «… (лекция) — перенос с 5 ноября (чт)»
+  const mark = p.status === 'moved-here' ? ` — перенос с ${dayMonthWeekday(p.movedFrom)}` : p.status === 'extra' ? ' — доп. пара' : '';
   const out = [timeLine(p), `${p.numbers.map(keycap).join('')}пара/${p.room} - ${pairName(p)}${mark}`];
   if (p.note && p.type !== 'lecture') out.push(p.note);       // у лекции пометка уже в скобках
   if (p.changed && p.changed.teacher) out.push(`Ведёт: ${p.teacher}`);
@@ -59,43 +60,46 @@ export function dayText(iso, data, { emoji = false } = {}) {
   const head = `${WEEKDAYS[wd].toUpperCase()}${emoji ? DAY_EMOJI[wd] : ''}\n\n${dateLine(iso)}`;
   const blocks = day.pairs.map((p) => pairLines(p).join('\n'));
   let body = blocks.join('\n\n');
-  if (day.notes.length) body += (body ? '\n' : '') + day.notes.join('\n'); // пометки дня — сразу под последней парой
+  if (day.notes.length) {
+    // как у активистов — сразу под последней парой; но если у неё ДЗ или она отменена/перенесена,
+    // отделяем пустой строкой, чтобы пометку не приняли за ДЗ или причину отмены
+    const last = day.pairs[day.pairs.length - 1];
+    const glue = !last ? '' : last.status !== 'normal' && last.status !== 'moved-here' && last.status !== 'extra' || last.hw || last.links.length ? '\n\n' : '\n';
+    body += glue + day.notes.join('\n');
+  }
   return `${head}\n\n${body}`;
 }
 
-/** Дни недели (пн–сб), в которых есть что публиковать: [{date, text}]. */
+/** Дни недели, в которых есть что публиковать (воскресенье — если в нём что-то есть): [{date, text}]. */
 export function weekDays(monday, data, opts) {
-  return weekDates(monday).map((d) => ({ date: d, text: dayText(d, data, opts) })).filter((x) => x.text);
+  return studyDates(monday, data).map((d) => ({ date: d, text: dayText(d, data, opts) })).filter((x) => x.text);
 }
+/** Ограничение Telegram на длину одного сообщения. */
+export const TG_LIMIT = 4096;
 /** Вся неделя одним сообщением. */
 export function weekText(monday, data, opts) {
   return weekDays(monday, data, opts).map((x) => x.text).join('\n\n\n');
 }
 
 // ---------------- сообщения об изменениях ----------------
-/** Номер пары «как обычно» — для отменённых и перенесённых (у них в дне номера нет). */
-function usualNumber(day, p) {
-  if (p.kind !== 'template') return p.numbers[0] || null;
-  let n = 1;
-  for (const q of day.pairs) {
-    if (q.kind !== 'template') continue;
-    if (q.id === p.id) return n;
-    n += q.slots;
-  }
-  return null;
+/**
+ * Как назвать пару в сообщении. Номер — тот же, что в тексте дня («3–4 пара» у сдвоенной);
+ * у отменённой и перенесённой номера в дне нет, поэтому называем время.
+ */
+function who(p) {
+  const name = p.tgName || p.subject;
+  return p.numbers.length ? `${p.numbers.join('–')} пара ${name}` : `${name} в ${shortTime(p.start)}`;
 }
-const who = (day, p) => { const n = usualNumber(day, p); return `${n ? n + ' пара ' : ''}${p.tgName || p.subject}`; };
 const VALUE = { room: (v) => `в аудитории ${v}`, teacher: (v) => `ведёт ${v}` };
 
 /** Изменения одной пары в её день — по строке на изменение. */
 export function pairChanges(p, data) {
-  const day = buildDay(p.date, data);
-  const head = `❗ ${longDay(p.date)}: ${who(day, p)}`;
+  const head = `❗ ${longDay(p.date)}: ${who(p)}`;
   const out = [];
   if (p.status === 'cancelled') out.push(`${head} отменена${p.reason ? ` (${p.reason.replace(/[.\s]+$/, '')})` : ''}.`);
   else if (p.status === 'moved-away') out.push(`${head} перенесена на ${dayMonthWeekday(p.movedTo.date)}, ${shortTime(p.movedTo.start)}, ауд. ${p.movedTo.room}.`);
   else if (p.status === 'extra') out.push(`❗ ${longDay(p.date)}: дополнительная пара — ${pairName(p)}, ${shortTime(p.start)}, ауд. ${p.room}.`);
-  else if (p.status === 'moved-here') out.push(`❗ ${longDay(p.date)}: ${p.tgName || p.subject} (перенос с ${dayMonthWeekday(p.movedFrom)}) — ${shortTime(p.start)}, ауд. ${p.room}.`);
+  else if (p.status === 'moved-here') out.push(`❗ ${longDay(p.date)}: ${p.tgName || p.subject} — перенос с ${dayMonthWeekday(p.movedFrom)}, ${shortTime(p.start)}, ауд. ${p.room}.`);
   else {
     if (p.changed.room) out.push(`${head} — ${VALUE.room(p.room)} (вместо ${p.changed.room}).`);
     if (p.changed.start || p.changed.end) {
@@ -107,40 +111,72 @@ export function pairChanges(p, data) {
   return out;
 }
 
-/** Постоянные замены, которые начинаются на этой неделе (время — одной строкой). */
-function ruleChanges(monday, data) {
-  const dates = weekDates(monday);
-  const starts = (data.rules || []).filter((r) => dates.includes(r.from));
+/** Значение поля по шаблону и постоянным заменам на дату (без разовых замен дня). */
+function ruledValue(data, t, field, date) {
+  const rs = (data.rules || []).filter((r) => r.pairId === t.id && r.field === field && r.from <= date && (!r.to || date <= r.to))
+    .sort((a, b) => (a.from < b.from ? -1 : 1));
+  return rs.length ? rs[rs.length - 1].value : t[field];
+}
+/** Ближайший день с этой парой шаблона, начиная с даты (до 5 недель вперёд). */
+function nextOccurrence(data, t, date) {
+  for (let i = 0; i <= 35; i++) {
+    const d = addDays(date, i);
+    if (buildDay(d, data).pairs.some((q) => q.id === t.id && q.kind === 'template')) return d;
+  }
+  return null;
+}
+const FIELD_NAME = { room: 'аудитория', teacher: 'преподаватель' };
+const groupKey = (f) => (f === 'end' ? 'start' : f); // начало и конец времени — одно изменение
+function describe(data, t, field, date) {
+  if (field === 'start') return `время ${shortTime(ruledValue(data, t, 'start', date))}–${shortTime(ruledValue(data, t, 'end', date))}`;
+  return `${FIELD_NAME[field]} ${ruledValue(data, t, field, date)}`;
+}
+
+/**
+ * Постоянные замены, которые начинаются или заканчиваются на этой неделе.
+ * «Вместо» — то, что действовало раньше (а не шаблон: замен могло быть несколько подряд).
+ */
+function ruleChanges(dates, data) {
   const out = [];
-  const seen = new Set();
-  for (const r of starts) {
-    const key = `${r.pairId}|${r.from}|${r.field === 'end' ? 'start' : r.field}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const t = data.template.find((x) => x.id === r.pairId);
-    if (!t) continue;
+  const starts = new Set();
+  const items = (data.rules || []).map((r) => ({ r, t: data.template.find((x) => x.id === r.pairId), f: groupKey(r.field) })).filter((x) => x.t);
+  // начало: первый день с этой парой, начиная с даты правила
+  for (const { r, t, f } of items) {
+    const start = nextOccurrence(data, t, r.from);
+    const key = `${t.id}|${f}|${start}`;
+    if (!start || !dates.includes(start) || starts.has(key)) continue;
+    starts.add(key);
     const until = r.to ? `, по ${dayMonth(r.to)}` : ' и дальше';
-    let what;
-    if (r.field === 'start' || r.field === 'end') {
-      const same = starts.filter((x) => x.pairId === r.pairId && x.from === r.from);
-      const s = (same.find((x) => x.field === 'start') || {}).value || t.start;
-      const e = (same.find((x) => x.field === 'end') || {}).value || t.end;
-      what = `время ${shortTime(s)}–${shortTime(e)} (вместо ${shortTime(t.start)}–${shortTime(t.end)})`;
-    } else what = `${r.field === 'room' ? 'аудитория' : 'преподаватель'} ${r.value} (вместо ${t[r.field]})`;
-    out.push({ date: r.from, text: `❗ С ${dayMonthWeekday(r.from)}${until}: ${t.tgName || t.subject} — ${what}.` });
+    const was = describe(data, t, f, addDays(r.from, -1)).replace(/^\S+ /, '');
+    out.push({ date: start, text: `❗ С ${dayMonthWeekday(start)}${until}: ${t.tgName || t.subject} — ${describe(data, t, f, start)} (вместо ${was}).` });
+  }
+  // конец: первый день с этой парой после даты «по» — объявляем, что стало
+  // (если в этот же день начинается другая замена, о ней уже сказано выше)
+  const ends = new Set();
+  for (const { r, t, f } of items) {
+    if (!r.to) continue;
+    const after = nextOccurrence(data, t, addDays(r.to, 1));
+    const key = `${t.id}|${f}|${after}`;
+    if (!after || !dates.includes(after) || starts.has(key) || ends.has(key)) continue;
+    ends.add(key);
+    const now = describe(data, t, f, after);
+    const back = now === describe({ ...data, rules: [] }, t, f, after) ? 'снова ' : '';
+    out.push({ date: after, text: `❗ С ${dayMonthWeekday(after)}: ${t.tgName || t.subject} — ${back}${now}.` });
   }
   return out;
 }
 
 /** Все изменения недели по порядку дней: [{date, text}]. */
 export function weekChanges(monday, data) {
+  const dates = studyDates(monday, data);
+  const all = [...studyDates(monday, data), addDays(monday, 6)];
   const out = [];
-  for (const d of weekDates(monday)) {
+  for (const d of dates) {
     for (const p of buildDay(d, data).pairs) {
       // перенос, пришедший с этой же недели, уже описан строкой «перенесена на …»
-      if (p.status === 'moved-here' && weekDates(monday).includes(p.movedFrom)) continue;
+      if (p.status === 'moved-here' && all.includes(p.movedFrom)) continue;
       for (const text of pairChanges(p, data)) out.push({ date: d, text });
     }
   }
-  return [...out, ...ruleChanges(monday, data)].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return [...out, ...ruleChanges(all, data)].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }

@@ -465,9 +465,23 @@ function makeServer() {
     assert.match(tue, /1⃣пара\/305 - Муниципальное право\nДебаты: аргументы сторон/);   // разовая аудитория и ДЗ из прошлых шагов
     await page.check('#tg-emoji');
     assert.match(await page.inputValue('#tg-text'), /^СРЕДА\n/);                // эмодзи у среды нет — как у активистов
-    await page.click('#sheet .chips button:has-text("пн 2")');
+    await page.click('#sheet .chips button:has-text("пн 2")');                // день выбирается, копирует главная кнопка
+    assert.match(await page.textContent('#tg-copy'), /понедельник ещё раз/);
+    await page.click('#tg-copy');
     assert.match(await clip(), /^ПОНЕДЕЛЬНИК🍃\n/);
     await page.uncheck('#tg-emoji');
+    await page.waitForFunction(() => /среду/.test(document.querySelector('#tg-copy').textContent));
+    // вторник изменили после копирования — это видно, и его предлагают скопировать заново
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await row('2026-11-03', 'Муниципальное право').click();
+    await page.fill('#hw', 'Дебаты: аргументы сторон и регламент'); await page.waitForTimeout(1300); await saved();
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await page.click('#bar-telegram');
+    assert.match(await page.textContent('#sheet'), /После копирования изменились дни: 1/);
+    assert.match(await page.textContent('#sheet .chips'), /! вт 3/);
+    assert.match(await page.textContent('#tg-copy'), /вторник заново \(изменён\)/);
+    await page.click('#tg-copy');
+    assert.match(await clip(), /Дебаты: аргументы сторон и регламент/);
   });
 
   await check('шаг 7: «Вся неделя» и «Изменения» — тексты для группы, копирование по одному и всех сразу', async () => {
@@ -497,13 +511,20 @@ function makeServer() {
     await page.keyboard.press('Escape'); await page.waitForTimeout(300);
   });
 
-  await check('шаг 7: телефон не дал скопировать — текст выделен и подсказка', async () => {
-    await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new Error('нет доступа')); });
+  await check('шаг 7: буфер недоступен — сначала запасной способ, затем окно с выделенным текстом (и на вкладке «Изменения»)', async () => {
+    await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new Error('нет доступа')); window.__copied = null;
+      document.execCommand = (cmd) => { window.__copied = cmd === 'copy' ? document.activeElement.value : null; return true; }; });
     await page.click('#bar-telegram'); await page.click('#tg-tab-week');
     await page.click('#tg-copy');
-    assert.match(await page.textContent('#toast'), /Текст выделен/);
-    const sel = await page.evaluate(() => { const t = document.getElementById('tg-text'); return [document.activeElement === t, t.selectionEnd - t.selectionStart, t.value.length]; });
-    assert.equal(sel[0], true); assert.equal(sel[1], sel[2]);
+    assert.match(await page.evaluate(() => window.__copied), /^ПОНЕДЕЛЬНИК/);    // скопировано старым способом
+    assert.equal(await page.locator('.dialog').count(), 0);
+    await page.evaluate(() => { document.execCommand = () => false; });
+    await page.click('#tg-tab-changes'); await page.click('#tg-ch-0');
+    await page.waitForSelector('.dialog');
+    assert.match(await page.textContent('.dialog'), /Скопируйте вручную/);
+    const sel = await page.evaluate(() => { const t = document.querySelector('.dialog textarea'); return [document.activeElement === t, t.selectionEnd - t.selectionStart, t.value.length, t.value]; });
+    assert.equal(sel[0], true); assert.equal(sel[1], sel[2]); assert.match(sel[3], /^❗ /);
+    await page.click('.dialog button:has-text("Готово")');
     await page.keyboard.press('Escape'); await page.waitForTimeout(300);
     await page.reload(); await page.waitForSelector('.fill');                   // вернуть настоящий буфер обмена
   });
