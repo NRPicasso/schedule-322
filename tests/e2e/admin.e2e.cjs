@@ -343,7 +343,7 @@ function makeServer() {
     await page.click('#ch-move'); await page.fill('#m-date', '2026-11-07'); await page.dispatchEvent('#m-date', 'change');
     await page.click('#m-save'); await saved();
     await page.keyboard.press('Escape'); await page.waitForTimeout(300);
-    await page.click('.fill button'); await page.waitForSelector('.wz-foot');
+    await page.click('.fill button:has-text("Заполнить"), .fill button:has-text("Проверить")'); await page.waitForSelector('.wz-foot');
     let found = false;
     for (let i = 0; i < 6 && !found; i++) {
       found = /сб 7 ноября/i.test(await page.textContent('#sheet .sh-head'));
@@ -444,6 +444,68 @@ function makeServer() {
     await page.click('.dialog button:has-text("Понятно")'); await page.waitForTimeout(800);
     assert.equal(await page.locator('.dialog').count(), 0);
     await page.reload(); await page.waitForSelector('.fill');
+  });
+
+
+  // ---------------- шаг 7: текст для Telegram ----------------
+  const clip = () => page.evaluate(() => navigator.clipboard.readText());
+  await check('шаг 7: «По дням» — копирование по очереди: понедельник → вторник → …, отметки ✓', async () => {
+    await toWeek('2 ноября');
+    await page.click('#bar-telegram');
+    await page.waitForSelector('#tg-copy');
+    assert.match(await page.textContent('#tg-copy'), /Скопировать понедельник/);
+    assert.match(await page.inputValue('#tg-text'), /^ПОНЕДЕЛЬНИК\n\n02\.11\.2026\n\n15⁰⁰-16³⁰\n1⃣пара\/115 - ГПП \(лекция\)/);
+    await page.click('#tg-copy');
+    assert.match(await clip(), /^ПОНЕДЕЛЬНИК\n\n02\.11\.2026/);
+    await page.waitForFunction(() => /вторник/.test(document.querySelector('#tg-copy').textContent));
+    assert.match(await page.textContent('#sheet .chips'), /✓ пн 2/);
+    assert.match(await page.inputValue('#tg-text'), /^ВТОРНИК\n\n03\.11\.2026/);
+    await page.click('#tg-copy');
+    const tue = await clip();
+    assert.match(tue, /1⃣пара\/305 - Муниципальное право\nДебаты: аргументы сторон/);   // разовая аудитория и ДЗ из прошлых шагов
+    await page.check('#tg-emoji');
+    assert.match(await page.inputValue('#tg-text'), /^СРЕДА\n/);                // эмодзи у среды нет — как у активистов
+    await page.click('#sheet .chips button:has-text("пн 2")');
+    assert.match(await clip(), /^ПОНЕДЕЛЬНИК🍃\n/);
+    await page.uncheck('#tg-emoji');
+  });
+
+  await check('шаг 7: «Вся неделя» и «Изменения» — тексты для группы, копирование по одному и всех сразу', async () => {
+    await page.click('#tg-tab-week');
+    await page.click('#tg-copy');
+    const week = await clip();
+    assert.match(week, /^ПОНЕДЕЛЬНИК[\s\S]*\n\n\nВТОРНИК[\s\S]*ПЯТНИЦА/);
+    await page.click('#tg-tab-changes');
+    const changes = await page.textContent('#sheet');
+    assert.match(changes, /❗ Вторник, 3 ноября: 1 пара Муниципальное право — в аудитории 305 \(вместо 211\)\./);
+    await page.click('#tg-ch-0');
+    assert.match(await clip(), /^❗ /);
+    if (await page.locator('#tg-copy-all').count()) { await page.click('#tg-copy-all'); assert.ok((await clip()).split('\n').length >= 2); }
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth) <= 360);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  });
+
+  await check('шаг 7: в карточке изменённой пары — готовое сообщение для группы', async () => {
+    await row('2026-11-03', 'Муниципальное право').click();
+    assert.match(await page.textContent('#sheet'), /Сообщение для группы[\s\S]*в аудитории 305/);
+    await page.click('#tg-pair');
+    assert.equal(await clip(), '❗ Вторник, 3 ноября: 1 пара Муниципальное право — в аудитории 305 (вместо 211).');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await row('2026-11-06', 'Уголовный процесс').click();
+    await page.waitForSelector('#sheet:not([hidden]) #ch-room');
+    assert.doesNotMatch(await page.textContent('#sheet'), /Сообщение для группы/); // у пары без изменений блока нет
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  });
+
+  await check('шаг 7: телефон не дал скопировать — текст выделен и подсказка', async () => {
+    await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new Error('нет доступа')); });
+    await page.click('#bar-telegram'); await page.click('#tg-tab-week');
+    await page.click('#tg-copy');
+    assert.match(await page.textContent('#toast'), /Текст выделен/);
+    const sel = await page.evaluate(() => { const t = document.getElementById('tg-text'); return [document.activeElement === t, t.selectionEnd - t.selectionStart, t.value.length]; });
+    assert.equal(sel[0], true); assert.equal(sel[1], sel[2]);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    await page.reload(); await page.waitForSelector('.fill');                   // вернуть настоящий буфер обмена
   });
 
   await check('360 px без горизонтальной прокрутки; группа видит новое ДЗ', async () => {

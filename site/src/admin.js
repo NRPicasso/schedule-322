@@ -2,13 +2,14 @@
 // Правки применяются на экране сразу и уходят на сервер из очереди (store.js) — без сети не теряются.
 import { buildDay, weekDates, mondayOf, addDays, weekday } from './schedule.js';
 import { moscowNow } from './time.js';
-import { dayMonth, longDay, weekRange, shortTime, shortLink, WEEKDAYS_SHORT } from './format.js';
+import { dayMonth, longDay, weekRange, shortTime, shortLink, WEEKDAYS, WEEKDAYS_SHORT } from './format.js';
 import { h, icons, halfLabel, tile, fullName, safeLink } from './dom.js';
 import { loadSchedule } from './api.js';
 import { postRequest, newOpId } from './editor-api.js';
 import { applyOp, inverseOf, createQueue, applyResult } from './store.js';
 import { API_URL } from './config.js';
 import { splitPaste, learnTopics, linkInfo, previousHomework, frequentPhrases } from './helpers.js';
+import { weekDays, weekText, weekChanges, pairChanges } from './telegram.js';
 
 const $ = (id) => document.getElementById(id);
 const TYPE = { lecture: 'лекция', seminar: 'семинар', other: 'занятие' };
@@ -756,6 +757,108 @@ function changesSection(p) {
   return sec;
 }
 
+// ---------------- текст для Telegram (шаг 7) ----------------
+const EMOJI_KEY = 'raspisanie-322:tg-emoji';
+const tg = { tab: 'days', monday: null, copied: new Set() }; // что уже скопировано на этой неделе (по дням)
+function tgEmoji() { try { return (local && local.getItem(EMOJI_KEY)) === '1'; } catch { return false; } }
+function setTgEmoji(on) { try { if (local) local.setItem(EMOJI_KEY, on ? '1' : '0'); } catch { /* приватный режим */ } }
+
+/**
+ * Скопировать текст. Если браузер не дал доступ к буферу, выделяем текст в поле предпросмотра,
+ * чтобы оставалось нажать «Копировать» в меню телефона.
+ */
+async function copyText(text, btn, area, doneLabel = 'Скопировано ✓') {
+  try {
+    await navigator.clipboard.writeText(text);
+    const old = btn.textContent; btn.textContent = doneLabel; btn.classList.add('done');
+    setTimeout(() => { if (document.contains(btn)) { btn.textContent = old; btn.classList.remove('done'); } }, 2000);
+    return true;
+  } catch {
+    if (area) { area.focus(); area.select(); }
+    toast('Телефон не дал скопировать. Текст выделен — нажмите «Копировать» в меню.');
+    return false;
+  }
+}
+const preview = (text, id) => {
+  const ta = h('textarea', { class: 'input tg-preview', id, readonly: true, rows: String(Math.min(18, text.split('\n').length + 1)), 'aria-label': 'Текст для Telegram' });
+  ta.value = text;
+  return ta;
+};
+
+function openTelegram(ret, tab) {
+  if (tg.monday !== S.monday) { tg.monday = S.monday; tg.copied = new Set(); }
+  if (tab) tg.tab = tab;
+  openSheet(telegramSheet, ret, true);
+}
+function telegramSheet() {
+  const opts = { emoji: tgEmoji() };
+  const tabs = [['days', 'По дням'], ['week', 'Вся неделя'], ['changes', 'Изменения']];
+  const out = [sheetHead('Текст для Telegram', weekRange(S.monday)),
+    h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Какой текст', style: 'margin-bottom:12px' }, tabs.map(([k, label]) =>
+      h('button', { type: 'button', role: 'tab', id: 'tg-tab-' + k, 'aria-selected': String(tg.tab === k), onclick: () => { tg.tab = k; renderSheet(); }, text: label })))];
+  const box = h('div', { class: 'stack', role: 'tabpanel', 'aria-labelledby': 'tg-tab-' + tg.tab });
+  out.push(box);
+
+  if (tg.tab !== 'changes') {
+    // напоминание: текст уходит группе — пустые ДЗ лучше заметить до копирования
+    const empty = weekSeminars().filter((p) => !isDone(p)).length;
+    if (empty) box.append(h('p', { class: 'banner', text: `ДЗ не заполнено у семинаров: ${empty}. Можно скопировать и так, но лучше сначала заполнить.` }));
+    box.append(h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'tg-emoji', checked: opts.emoji, onchange: (e) => { setTgEmoji(e.target.checked); renderSheet(); } }), 'Эмодзи у названий дней (🍃🌹☘️)'));
+  }
+
+  if (tg.tab === 'days') {
+    const days = weekDays(S.monday, S.data, opts);
+    if (!days.length) { box.append(h('div', { class: 'empty' }, h('b', { text: 'На этой неделе нечего публиковать' }))); return out; }
+    const next = days.find((d) => !tg.copied.has(d.date));
+    const cur = next || days[days.length - 1];
+    const area = preview(cur.text, 'tg-text');
+    const name = (d) => WEEKDAYS[weekday(d)];
+    const mainBtn = h('button', { type: 'button', class: 'btn btn-primary btn-big w100', id: 'tg-copy',
+      text: next ? `Скопировать ${name(next.date)}` : 'Все дни скопированы — скопировать заново',
+      onclick: async () => {
+        if (!next) { tg.copied = new Set(); renderSheet(); return; }
+        if (await copyText(next.text, mainBtn, area)) { tg.copied.add(next.date); setTimeout(renderSheet, 600); }
+      } });
+    box.append(
+      h('p', { class: 'small muted', style: 'margin:0', text: 'Каждый день — отдельным сообщением, как сейчас в группе. Скопируйте, вставьте в Telegram и вернитесь за следующим.' }),
+      h('div', { class: 'chips', role: 'group', 'aria-label': 'Дни' }, days.map((d) => h('button', {
+        type: 'button', class: 'chip' + (tg.copied.has(d.date) ? ' on' : ''), 'aria-pressed': String(d.date === cur.date),
+        onclick: async (e) => { if (await copyText(d.text, e.currentTarget, null, '✓')) { tg.copied.add(d.date); setTimeout(renderSheet, 600); } },
+        text: `${tg.copied.has(d.date) ? '✓ ' : ''}${WEEKDAYS_SHORT[weekday(d.date)]} ${Number(d.date.slice(8))}`,
+      }))),
+      mainBtn, area); // кнопка выше текста — нажать можно, не прокручивая
+  } else if (tg.tab === 'week') {
+    const text = weekText(S.monday, S.data, opts);
+    if (!text) { box.append(h('div', { class: 'empty' }, h('b', { text: 'На этой неделе нечего публиковать' }))); return out; }
+    const area = preview(text, 'tg-text');
+    const btn = h('button', { type: 'button', class: 'btn btn-primary btn-big w100', id: 'tg-copy', text: 'Скопировать всё', onclick: () => copyText(text, btn, area) });
+    box.append(h('p', { class: 'small muted', style: 'margin:0', text: 'Вся неделя одним сообщением.' }), btn, area);
+  } else {
+    const list = weekChanges(S.monday, S.data);
+    if (!list.length) { box.append(h('div', { class: 'empty' }, h('b', { text: 'На этой неделе изменений не было' }), h('span', { class: 'muted', text: 'Здесь появятся замены, отмены, переносы и доп. пары.' }))); return out; }
+    if (list.length > 1) {
+      const all = list.map((x) => x.text).join('\n');
+      const allBtn = h('button', { type: 'button', class: 'btn btn-secondary w100', id: 'tg-copy-all', text: `Скопировать все изменения (${list.length})`, onclick: () => copyText(all, allBtn, null) });
+      box.append(allBtn);
+    }
+    box.append(...list.map((x, i) => {
+      const btn = h('button', { type: 'button', class: 'btn btn-ghost', id: 'tg-ch-' + i, text: 'Скопировать', onclick: () => copyText(x.text, btn, null) });
+      return h('div', { class: 'variant tg-change' }, h('div', { style: 'white-space:pre-wrap', text: x.text }), btn);
+    }));
+  }
+  return out;
+}
+
+/** Блок «Сообщение для группы» в карточке изменённой пары. */
+function changeNotice(p) {
+  const list = pairChanges(p, S.data);
+  if (!list.length) return null;
+  const text = list.join('\n');
+  const btn = h('button', { type: 'button', class: 'btn btn-secondary', id: 'tg-pair', text: 'Скопировать для Telegram', onclick: () => copyText(text, btn, null) });
+  return h('div', { class: 'sec' }, h('div', { class: 'caps muted', text: 'Сообщение для группы' }),
+    h('div', { class: 'variant', style: 'white-space:pre-wrap', text }), btn);
+}
+
 // ---------------- карточка пары ----------------
 function openPair(date, id, ret) { openSheet(() => pairSheet(date, id), ret); }
 function pairSheet(date, id) {
@@ -773,6 +876,7 @@ function pairSheet(date, id) {
       x ? h('div', { class: 'cols' },
         h('button', { type: 'button', class: 'btn btn-secondary', id: 'open-moved', onclick: () => showPairAt(x.date, x.id), text: 'Открыть новую дату' }),
         h('button', { type: 'button', class: 'btn btn-danger', id: 'unmove', onclick: () => cancelMove(x), text: 'Отменить перенос' })) : null));
+    out.push(changeNotice(p));
     return out;
   }
   if (p.status === 'cancelled') {
@@ -788,6 +892,7 @@ function pairSheet(date, id) {
         onchange: (e) => { flushText(); commit(pairOp(p, { noHw: e.target.checked }), e.target.checked ? 'Отмечено: ДЗ нет' : 'Отметка снята'); },
       }),
       hasHw(p) ? 'ДЗ нет — недоступно: ДЗ уже вписано' : 'ДЗ нет (группа увидит «ДЗ нет»)')));
+  out.push(changeNotice(p));
   out.push(changesSection(p));
   return out;
 }
@@ -806,7 +911,8 @@ function wizardView() {
     const ps = keys.map(([d, id]) => findPair(d, id)).filter(Boolean);
     return [sheetHead('Готово', weekRange(S.monday)), h('div', { class: 'big-check', 'aria-hidden': 'true', text: '✓' }),
       h('p', { style: 'text-align:center;margin:0 0 16px', text: `С ДЗ: ${ps.filter(hasHw).length} · «ДЗ нет»: ${ps.filter((p) => p.noHw && !hasHw(p)).length} · пропущено: ${ps.filter((p) => !isDone(p)).length}` }),
-      h('button', { type: 'button', class: 'btn btn-primary btn-big w100', onclick: closeSheet, text: 'Вернуться к неделе' })];
+      h('button', { type: 'button', class: 'btn btn-primary btn-big w100', id: 'wz-telegram', onclick: (e) => { closeSheet(); openTelegram(e.currentTarget, 'days'); }, text: 'Текст для Telegram' }),
+      h('button', { type: 'button', class: 'btn btn-ghost w100', onclick: closeSheet, text: 'Вернуться к неделе' })];
   }
   const [date, id] = keys[wizard.i];
   const p = findPair(date, id);
@@ -955,8 +1061,12 @@ function renderEditor() {
   if (sems.length) {
     out.push(h('section', { class: 'fill' + (allDone ? ' done' : ''), 'aria-label': 'Заполнение ДЗ' },
       h('div', {}, h('h2', { text: allDone ? 'Все семинары заполнены' : `ДЗ: ${done} из ${sems.length} семинаров` }),
-        h('div', { class: 'small', style: 'opacity:.85', text: allDone ? 'Можно проверить, как видит группа.' : 'Пройдём по семинарам по очереди — около минуты.' })),
-      h('button', { type: 'button', class: 'btn', onclick: (e) => openWizard(e.currentTarget), text: allDone ? 'Проверить' : 'Заполнить' }),
+        h('div', { class: 'small', style: 'opacity:.85', text: allDone ? 'Осталось скопировать текст в Telegram.' : 'Пройдём по семинарам по очереди — около минуты.' })),
+      allDone
+        ? h('div', { class: 'fill-acts' },
+          h('button', { type: 'button', class: 'btn', id: 'fill-telegram', onclick: (e) => openTelegram(e.currentTarget, 'days'), text: 'Telegram' }),
+          h('button', { type: 'button', class: 'btn btn-ghost', onclick: (e) => openWizard(e.currentTarget), text: 'Проверить' }))
+        : h('button', { type: 'button', class: 'btn', onclick: (e) => openWizard(e.currentTarget), text: 'Заполнить' }),
       h('div', { class: 'meter', 'aria-hidden': 'true' }, sems.map((p) => h('i', { class: isDone(p) ? 'on' : '' })))));
   } else {
     out.push(h('div', { class: 'empty' }, h('b', { text: 'На этой неделе семинаров нет' }), h('span', { class: 'muted', text: 'Можно добавить пометки дня.' })));
@@ -997,7 +1107,8 @@ function renderBar() {
     error: ['error', 'Не сохранилось. Повторю автоматически'],
   }[S.status];
   bar.replaceChildren(h('div', { class: 'inner' }, h('div', { class: 'save ' + cls, role: 'status', text }),
-    S.status === 'error' || S.status === 'offline' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => retryNow(), text: 'Повторить' }) : null));
+    S.status === 'error' || S.status === 'offline' ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => retryNow(), text: 'Повторить' }) : null,
+    h('button', { type: 'button', class: 'btn btn-primary', id: 'bar-telegram', onclick: (e) => openTelegram(e.currentTarget), text: 'Telegram' })));
 }
 
 function render({ sheet = true } = {}) {
