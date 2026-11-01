@@ -70,7 +70,7 @@ const server = http.createServer((req, res) => {
   });
 
   await check('редактор: noindex и свой манифест; подсказки первого входа — 3 шага с подсветкой, «Пропустить» запоминается, «?» показывает снова', async () => {
-    await page.goto(SITE + '/admin.html');
+    await page.goto(SITE + '/admin.html?now=2026-11-02T10:00');
     assert.equal(await page.getAttribute('meta[name=robots]', 'content'), 'noindex, nofollow');
     assert.equal(await page.getAttribute('link[rel=manifest]', 'href'), 'admin.webmanifest');
     await page.fill('#code', '123456'); await page.click('button[type=submit]');
@@ -136,7 +136,7 @@ const server = http.createServer((req, res) => {
   const online = async () => { down = false; offline = false; await ctx.setOffline(false); }; // если проверка выше упала посередине
   await check('новая версия сайта: до «Обновить» работает старая целиком (без смешения), плашка внизу не закрывает «Отменить»; «Позже»; вторая вкладка', async () => {
     await online();
-    if (!(await page.locator('.fill').count())) { await page.goto(SITE + '/admin.html'); await page.waitForSelector('.fill'); }
+    if (!(await page.locator('.fill').count())) { await page.goto(SITE + '/admin.html?now=2026-11-02T10:00'); await page.waitForSelector('.fill'); }
     // выкладываем версию, где страница редактора импортирует новый экспорт модуля, — смешение старого и нового сломало бы страницу
     fs.appendFileSync(path.join(DIR, 'src', 'time.js'), "\nexport const NEW_THING = 'новая версия';\n");
     const html = path.join(DIR, 'admin.html');
@@ -144,7 +144,7 @@ const server = http.createServer((req, res) => {
       '<script type="module" src="src/admin.js"></script>\n  <script type="module">import { NEW_THING } from \'./src/time.js\'; document.documentElement.dataset.version = NEW_THING;</script>'));
     const sw = path.join(DIR, 'sw.js');
     fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace(/const VERSION = '(\w+)'/, "const VERSION = 'test-new-version'"));
-    const page2 = await ctx.newPage(); await page2.goto(SITE + '/admin.html'); await page2.waitForSelector('.fill');
+    const page2 = await ctx.newPage(); await page2.goto(SITE + '/admin.html?now=2026-11-02T10:00'); await page2.waitForSelector('.fill');
     await page.reload(); await page.waitForSelector('.fill');                    // сервер уже новый, но телефон — на старой версии целиком
     assert.equal(await page.evaluate(() => document.documentElement.dataset.version || null), null);
     await page.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); await r.update(); });

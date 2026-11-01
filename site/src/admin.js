@@ -1,7 +1,7 @@
 // Редактор для активистов: вход по коду, неделя, мастер «Заполнить», карточка пары, пометки дня.
 // Правки применяются на экране сразу и уходят на сервер из очереди (store.js) — без сети не теряются.
 import { buildDay, studyDates, mondayOf, addDays, weekday } from './schedule.js';
-import { moscowNow } from './time.js';
+import { moscowNow, parseNowOverride } from './time.js';
 import { dayMonth, longDay, weekRange, shortTime, shortLink, WEEKDAYS_SHORT } from './format.js';
 import { h, icons, halfLabel, tile, fullName, safeLink } from './dom.js';
 import { loadSchedule } from './api.js';
@@ -81,8 +81,11 @@ function renderLogin(message = '') {
 }
 
 // ---------------- данные ----------------
+// «?now=2026-11-03T10:00» в адресе подменяет текущее время — как на странице группы (для проверок и показа)
+const NOW_OVERRIDE = parseNowOverride(location.search);
+const nowMsk = () => NOW_OVERRIDE || moscowNow();
 function defaultMonday() {
-  const now = moscowNow(); const wd = weekday(now.date);
+  const now = nowMsk(); const wd = weekday(now.date);
   // с пятницы 12:00 до воскресенья готовим следующую неделю, в остальное время — текущая
   if (wd === 0 || wd === 6 || (wd === 5 && now.minutes >= 12 * 60)) return addDays(mondayOf(now.date), 7);
   return mondayOf(now.date);
@@ -1044,7 +1047,7 @@ function showConflict(op, current) {
 // ---------------- неделя ----------------
 function renderTop() {
   const days = studyDates(S.monday, S.data).map((d) => buildDay(d, S.data));
-  const today = moscowNow().date;
+  const today = nowMsk().date;
   const moveWeek = (n) => { S.monday = addDays(S.monday, n); render(); window.scrollTo(0, 0); };
   $('top').replaceChildren(h('div', { class: 'top' }, h('div', { class: 'wrap' },
     h('div', { class: 'weekline' },

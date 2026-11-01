@@ -57,7 +57,7 @@ function makeServer() {
     await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) });
   });
   const saved = () => page.waitForSelector('.save.saved', { timeout: 8000 });
-  await page.goto(SITE + '/admin.html');
+  await page.goto(SITE + '/admin.html?now=2026-11-02T10:00');
 
   await check('неверный код — понятная ошибка, верный — открывается неделя 2–7 ноября', async () => {
     await page.fill('#code', '111111'); await page.click('button[type=submit]');
