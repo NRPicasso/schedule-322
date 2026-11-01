@@ -91,13 +91,13 @@ const FIELDS = ['room', 'start', 'end', 'teacher'];
  * постоянных замен, действующих на from, вписываются в пары. Замены с датой «по» не переносятся —
  * они возвращаются списком для предупреждения.
  */
-export function copyForNewVersion(data, from) {
-  const base = versionAt(data, from);
+export function copyForNewVersion(data, from, base = versionAt(data, from)) {
+  const current = base === versionAt(data, from); // замены вписываем только из версии, которая действует на эту дату
   const pairs = base.pairs.map((t) => ({ ...t }));
   const baked = [], limited = [];
   for (const r of data.rules || []) {
     const t = pairs.find((x) => x.id === r.pairId);
-    if (!t || !FIELDS.includes(r.field) || !ruleInVersion(data, base, r)) continue;
+    if (!current || !t || !FIELDS.includes(r.field) || !ruleInVersion(data, base, r)) continue;
     if (r.from > from || (r.to && r.to < from)) continue; // не действует на дату новой версии
     if (r.to) { limited.push(r); continue; }
     baked.push({ ...r, was: t[r.field] });
@@ -174,4 +174,85 @@ export function templateImpact(data, draft) {
 
   const order = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   return { items: items.sort(order), stronger: stronger.sort((a, b) => (a.from < b.from ? -1 : 1)), notCarried };
+}
+
+// ---------- черновик версии: проверки и сравнение (экраны «Шаблон и семестр») ----------
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DATE_RE = /^20\d\d-\d\d-\d\d$/;
+const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+
+/** Ошибки пары версии: {поле: текст} (пусто — ошибок нет). Те же правила, что на сервере. */
+export function pairErrors(t) {
+  const e = {};
+  if (!(t.subject || '').trim()) e.subject = 'Выберите предмет.';
+  if (!TIME_RE.test(t.start || '') || !TIME_RE.test(t.end || '') || toMin(t.end) <= toMin(t.start)) e.time = 'Время окончания должно быть позже начала.';
+  if (!(t.day >= 1 && t.day <= 6)) e.day = 'День — с понедельника по субботу.';
+  if ((t.room || '').length > 30) e.room = 'Аудитория — до 30 знаков.';
+  if ((t.teacher || '').length > 60) e.teacher = 'Преподаватель — до 60 знаков.';
+  if ((t.tgName || '').length > 100) e.tgName = 'Название для Telegram — до 100 знаков.';
+  if ((t.note || '').length > 200) e.note = 'Пометка — до 200 знаков.';
+  return e;
+}
+
+/** Ошибки черновика версии целиком: {поле: текст}; today — сегодняшняя дата (по Москве). */
+export function draftErrors(data, draft, today) {
+  const e = {};
+  if (!DATE_RE.test(draft.from || '') || draft.from <= today) e.from = 'Дата начала — не раньше завтрашнего дня.';
+  else if (versionsOf(data).some((v) => v.id !== draft.id && v.from === draft.from)) e.from = 'С этой даты уже есть версия — откройте её.';
+  if (!DATE_RE.test(draft.semesterStart || '') || !DATE_RE.test(draft.semesterEnd || '') || draft.semesterEnd < draft.semesterStart) e.semester = 'Конец семестра не раньше начала.';
+  if (!draft.pairs.length) e.pairs = 'В версии нет ни одной пары.';
+  else if (draft.pairs.length > 60) e.pairs = 'В версии не больше 60 пар.';
+  const bad = draft.pairs.find((t) => Object.keys(pairErrors(t)).length);
+  if (bad && !e.pairs) e.pairs = `Исправьте пару: ${WEEKDAY_NAMES[bad.day] || 'день?'}, ${bad.start || '—'} ${bad.subject || ''}`.trim();
+  return e;
+}
+const WEEKDAY_NAMES = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
+/** Накладывающиеся пары одного дня и одной недели (верх/низ): [{day, half, a, b}]. */
+export function overlaps(pairs) {
+  const out = [];
+  for (let day = 1; day <= 6; day++) {
+    for (const half of ['top', 'bottom']) {
+      const list = pairs.filter((t) => t.day === day && (t.half === 'both' || t.half === half) && TIME_RE.test(t.start || '') && TIME_RE.test(t.end || ''))
+        .sort((a, b) => toMin(a.start) - toMin(b.start));
+      for (let i = 1; i < list.length; i++) {
+        const a = list[i - 1], b = list[i];
+        if (toMin(b.start) < toMin(a.end) && !out.some((o) => o.day === day && o.a === a && o.b === b)) out.push({ day, half, a, b });
+      }
+    }
+  }
+  // пара «обе недели» с «обе недели» нашлась бы дважды (верх и низ) — оставляем одну запись
+  return out.filter((o, i) => !(o.half === 'bottom' && o.a.half === 'both' && o.b.half === 'both' && out.some((x, j) => j < i && x.a === o.a && x.b === o.b)));
+}
+
+const DIFF_FIELDS = ['day', 'half', 'start', 'end', 'slots', 'subject', 'type', 'room', 'teacher', 'tgName', 'note'];
+/** Чем черновик отличается от версии-основы: {added, removed, changed: [{t, fields: [{field, was, now}]}]}. */
+export function versionDiff(basePairs, pairs) {
+  const byId = new Map(basePairs.map((t) => [t.id, t]));
+  const ids = new Set(pairs.map((t) => t.id));
+  const changed = [];
+  for (const t of pairs) {
+    const b = byId.get(t.id);
+    if (!b) continue;
+    const fields = DIFF_FIELDS.filter((f) => (b[f] ?? '') !== (t[f] ?? '') && !(f === 'slots' && (b.slots || 1) === (t.slots || 1)))
+      .map((f) => ({ field: f, was: b[f] ?? '', now: t[f] ?? '' }));
+    if (fields.length) changed.push({ t, fields });
+  }
+  return { added: pairs.filter((t) => !byId.has(t.id)), removed: basePairs.filter((t) => !ids.has(t.id)), changed };
+}
+
+/** Удаление версии = на её даты возвращается предыдущая; для списка последствий — как «черновик». */
+export function removalDraft(data, versionId) {
+  const list = versionsOf(data);
+  const i = list.findIndex((v) => v.id === versionId);
+  const v = list[i], prev = list[i - 1] || list[0];
+  return { ...prev, id: v.id, from: v.from, pairs: prev.pairs, prevFrom: prev.from };
+}
+
+/** Новый id пары: не совпадает ни с одной парой ни одной версии. */
+export function newPairId(data, draftPairs = []) {
+  const used = new Set([...versionsOf(data).flatMap((v) => v.pairs.map((t) => t.id)), ...draftPairs.map((t) => t.id)]);
+  let id;
+  do id = 'P-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); while (used.has(id));
+  return id;
 }

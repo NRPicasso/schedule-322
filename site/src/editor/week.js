@@ -12,6 +12,7 @@ import { openNotes } from './notes.js';
 import { openWizard } from './wizard.js';
 import { openTelegram } from './telegram-sheet.js';
 import { startCoach, endCoach, markCoachTarget, coachOn } from './coach.js';
+import { openTemplate } from './template.js';
 
 function renderTop() {
   const days = studyDates(S.monday, S.data).map((d) => buildDay(d, S.data));
@@ -60,6 +61,7 @@ function renderEditor() {
   const days = studyDates(S.monday, S.data).map((d) => buildDay(d, S.data));
   const sems = weekSeminars(); const done = sems.filter(isDone).length; const allDone = sems.length > 0 && done === sems.length;
   const out = [h('div', { class: 'userline' }, h('span', { class: 'small muted', text: S.name }),
+    h('button', { type: 'button', class: 'btn btn-ghost', id: 'tpl-open', onclick: (e) => openTemplate(e.currentTarget), text: 'Шаблон' }),
     h('a', { class: 'btn btn-ghost', href: './', text: 'Как видит группа' }),
     h('button', { type: 'button', class: 'icon-btn', id: 'hints', 'aria-label': 'Подсказки', title: 'Подсказки', onclick: startCoach, text: '?' }),
     h('button', { type: 'button', class: 'btn btn-ghost', id: 'logout', onclick: logout, text: 'Выйти' }))];

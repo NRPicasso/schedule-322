@@ -292,3 +292,28 @@ test('запись версий в листы: «Шаблон» и «Верси�
   assert.throws(() => g.api.writeVersions_(plain(before.versions)), /есть свои столбцы с данными \(комментарий\)/);
   assert.equal(tpl[1].at(-1), 'важно');
 });
+
+test('сохранение версии с переносом записей: ДЗ пары, сменившей день, переезжает вместе с версией (и обратно при отмене)', () => {
+  const st = state({ entries: [
+    { date: '2026-11-20', pairId: 'FRI-1830', hw: 'Задачи 1–5', links: ['https://t.me/c/1/2/3'], version: 2 },
+    { date: '2026-11-19', pairId: 'FRI-1830', hw: '', links: ['https://t.me/c/1/2/9'], version: 1 },
+  ] });
+  const op = { ...save(draft()), moves: [{ date: '2026-11-20', pairId: 'FRI-1830', to: '2026-11-19' }] };
+  const out = run(st, [op]);
+  assert.deepEqual(errors(out), ['ok']);
+  const at = (d) => st.entries.find((e) => e.date === d && e.pairId === 'FRI-1830');
+  assert.equal(at('2026-11-19').hw, 'Задачи 1–5');
+  assert.deepEqual([...at('2026-11-19').links], ['https://t.me/c/1/2/9', 'https://t.me/c/1/2/3']);
+  assert.equal(at('2026-11-20').hw, '');
+  assert.equal(at('2026-11-20').links.length, 0);
+  assert.equal(out.logs.filter((l) => l.sheet === 'Записи').length, 2);
+  assert.ok(out.logs.every((l) => l.by === 'Активист 1'));
+  // отмена: прежняя версия удаляется, записи — обратно
+  const undo = run(st, [{ opId: opId(), type: 'version.remove', date: '2026-11-01', id: 'V-20261116', baseVersion: 1 },
+    { opId: opId(), type: 'entry', date: '2026-11-20', pairId: 'FRI-1830', baseVersion: at('2026-11-20').version, patch: { hw: 'Задачи 1–5', links: ['https://t.me/c/1/2/3'] } },
+    { opId: opId(), type: 'entry', date: '2026-11-19', pairId: 'FRI-1830', baseVersion: at('2026-11-19').version, patch: { hw: '', links: ['https://t.me/c/1/2/9'] } }]);
+  assert.deepEqual(errors(undo), ['ok', 'ok', 'ok']);
+  assert.equal(at('2026-11-20').hw, 'Задачи 1–5');
+  // плохой список переносов отклоняется целиком
+  assert.match(errors(run(st, [{ ...save(draft({ id: 'V-x9', from: '2026-11-30' })), moves: [{ date: 'вчера', pairId: 'A', to: '2026-11-19' }] }]))[0], /неверный перенос записи/);
+});

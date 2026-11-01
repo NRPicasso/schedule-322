@@ -11,6 +11,7 @@ import { render, renderBar } from './editor/week.js';
 import { pairSheet } from './editor/pair.js';
 import { showConflict } from './editor/conflict.js';
 import { telegramSheet } from './editor/telegram-sheet.js';
+import { templateListOpen } from './editor/template.js';
 import { hintsSeen, startCoach } from './editor/coach.js';
 
 // ---------------- связи: нижние модули вызывают верхние через hooks ----------------
@@ -20,7 +21,7 @@ hooks.pairSheet = pairSheet;
 hooks.conflict = showConflict;
 hooks.start = start;
 // открытый лист Telegram перерисовываем: в нём нет полей ввода, а тексты должны быть свежими
-hooks.onData = () => render({ sheet: SH.build === telegramSheet });
+hooks.onData = () => render({ sheet: SH.build === telegramSheet || templateListOpen() });
 hooks.afterData = () => { if (!S.coachChecked) { S.coachChecked = true; if (!hintsSeen()) startCoach(); } };
 
 // ---------------- запуск ----------------

@@ -373,6 +373,13 @@ function validateOp_(op, pairIds) {
       var ve = validVersion_(op.tplVersion);
       if (ve) return ve;
       if (op.tplVersion.from !== op.date) return 'неверная дата';
+      if (op.moves != null) {
+        if (!Array.isArray(op.moves) || op.moves.length > 100) return 'неверный список переносов';
+        for (var mi = 0; mi < op.moves.length; mi++) {
+          var mv = op.moves[mi];
+          if (!mv || typeof mv.pairId !== 'string' || !DATE_RE.test(mv.date || '') || !DATE_RE.test(mv.to || '')) return 'неверный перенос записи';
+        }
+      }
       return typeof op.baseVersion === 'number' && op.baseVersion >= 0 ? null : 'нет версии';
     }
     case 'version.remove':
@@ -478,6 +485,29 @@ function processOps_(state, ops, pairIds, meta, seen) {
     if (vi >= 0) state.versions[vi] = doc; else state.versions.push(doc);
     state.versions.sort(byFrom_);
     done(op, { opId: op.opId, ok: true, version: doc.version, tplVersion: doc }, cur ? 'версия шаблона' : 'версия шаблона +', SHEETS.versions.name, doc.id + ' с ' + doc.from, copy_(cur), doc);
+    (op.moves || []).forEach(function (m) { moveEntry_(m, op); });
+  };
+
+  // ДЗ, ссылки и «ДЗ нет» записи (дата, пара) → та же пара в другой день (при смене дня пары в версии).
+  // Если там уже что-то вписано — подпись добавляется строкой ниже, ссылки — без повторов.
+  var moveEntry_ = function (m, op) {
+    var si = findIndex_(state.entries, function (e) { return e.date === m.date && e.pairId === m.pairId; });
+    if (si < 0) return;
+    var src = state.entries[si];
+    if (!src.hw && !(src.links && src.links.length) && !src.noHw) return;
+    var ti = findIndex_(state.entries, function (e) { return e.date === m.to && e.pairId === m.pairId; });
+    var oldT = ti >= 0 ? copy_(state.entries[ti]) : null;
+    var t = oldT ? copy_(oldT) : { date: m.to, pairId: m.pairId, links: [], version: 0 };
+    if (src.hw && t.hw !== src.hw) t.hw = t.hw ? t.hw + '\n' + src.hw : src.hw;
+    t.links = (t.links || []).concat((src.links || []).filter(function (u) { return (t.links || []).indexOf(u) < 0; })).slice(0, LIMITS.links);
+    t.noHw = !t.hw && !t.links.length && (!!t.noHw || !!src.noHw);
+    t.version = (t.version || 0) + 1; t.by = meta.name; t.updatedAt = meta.now;
+    if (ti >= 0) state.entries[ti] = t; else state.entries.push(t);
+    var oldS = copy_(src), ns = copy_(src);
+    ns.hw = ''; ns.links = []; ns.noHw = false; ns.version = (ns.version || 0) + 1; ns.by = meta.name; ns.updatedAt = meta.now;
+    state.entries[si] = ns;
+    logs.push({ at: meta.now, by: meta.name, action: 'пара (ДЗ перенесено с версией шаблона)', sheet: SHEETS.entries.name, key: m.to + ' ' + m.pairId, before: oldT, after: t, opId: op.opId });
+    logs.push({ at: meta.now, by: meta.name, action: 'пара (ДЗ перенесено с версией шаблона)', sheet: SHEETS.entries.name, key: m.date + ' ' + m.pairId, before: oldS, after: ns, opId: op.opId });
   };
 
   ops.forEach(function (op) {

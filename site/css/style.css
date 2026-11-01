@@ -255,4 +255,8 @@ select.input { appearance: auto; }
 .sw-update[hidden] { display: none; }
 body.has-bar .sw-update { bottom: calc(76px + env(safe-area-inset-bottom, 0px)); } /* над нижней панелью редактора, не на «Отменить» вверху */
 body:has(#coach) .sw-update { display: none; }                                       /* пока открыты подсказки — не перекрываем их */
-@media (max-width: 359px) { .userline { flex-wrap: wrap; } .userline > span { flex-basis: 100%; } } /* имя активиста — своей строкой, а не одной буквой */
+@media (max-width: 479px) { .userline { flex-wrap: wrap; row-gap: 4px; } .userline > span { flex-basis: 100%; } .userline .btn { padding: 0 7px; } } /* имя активиста — своей строкой, кнопки — под ним (с v0.2 их четыре) */
+/* v0.2: шаблон и семестр */
+.chips.wrap { flex-wrap: wrap; overflow: visible; }
+.tpl-ver b { display: block; }
+.radio .tile { min-width: 40px; height: 26px; }

@@ -171,3 +171,43 @@ test('Telegram: замена прошлой версии не объявляет
   const list = weekChanges('2027-02-08', data).map((x) => x.text);
   assert.ok(!list.some((t) => /777|888|снова/.test(t)), list.join('\n'));
 });
+
+// ---------- черновик версии (экраны шага 4) ----------
+import { pairErrors, draftErrors, overlaps, versionDiff, removalDraft, newPairId } from '../site/src/versions.js';
+
+test('черновик: ошибки пары и версии — те же правила, что на сервере', () => {
+  assert.deepEqual(Object.keys(pairErrors({ day: 7, start: '15:00', end: '14:00', subject: ' ' })).sort(), ['day', 'subject', 'time']);
+  assert.deepEqual(pairErrors(seed.template[0]), {});
+  const data = withSpring();
+  const d = { ...spring(), id: 'V-new', from: '2026-11-02' };
+  assert.deepEqual(Object.keys(draftErrors(data, d, '2026-11-02')), ['from']);
+  assert.match(draftErrors(data, { ...d, from: '2027-02-09' }, '2026-11-02').from, /уже есть версия/);
+  assert.deepEqual(draftErrors(data, { ...spring() }, '2026-11-02'), {});              // своя же дата — не ошибка
+  assert.match(draftErrors(data, { ...spring(), semesterEnd: '2027-01-01' }, '2026-11-02').semester, /Конец семестра/);
+  assert.match(draftErrors(data, { ...spring(), pairs: [{ ...seed.template[0], subject: '' }] }, '2026-11-02').pairs, /Исправьте пару: пн, 15:00/);
+});
+
+test('черновик: наложения пар по дням и неделям, без повторов', () => {
+  const a = { id: 'a', day: 1, half: 'both', start: '15:00', end: '16:30' };
+  const b = { id: 'b', day: 1, half: 'both', start: '16:00', end: '17:30' };
+  const c = { id: 'c', day: 1, half: 'top', start: '17:00', end: '18:00' };
+  const d = { id: 'd', day: 1, half: 'bottom', start: '17:00', end: '18:00' };
+  const list = overlaps([a, b, c, d]).map((o) => `${o.half}:${o.a.id}-${o.b.id}`);
+  assert.deepEqual(list, ['top:a-b', 'top:b-c', 'bottom:b-d']);
+  assert.deepEqual(overlaps(seed.template), []);                                     // в настоящем шаблоне наложений нет
+});
+
+test('черновик: что изменилось относительно основы; удаление версии — как возврат прежней', () => {
+  const diff = versionDiff(seed.template, spring().pairs);
+  assert.deepEqual(diff.added.map((t) => t.id), ['P-new-1']);
+  assert.deepEqual(diff.removed.map((t) => t.id), ['TUE-1500-bot']);
+  assert.deepEqual(diff.changed.map((c) => `${c.t.id}: ${c.fields.map((f) => `${f.field} ${f.was}→${f.now}`).join()}`), ['TUE-1500-top: room 219→305']);
+  const data = withSpring({ entries: [{ date: '2027-02-16', pairId: 'P-new-1', hw: 'x', links: [] }, { date: '2027-02-15', pairId: 'P-new-1', hw: 'Читать', links: [] }] });
+  const r = removalDraft(data, 'V-20270209');
+  assert.equal(r.from, '2027-02-09');
+  assert.equal(r.prevFrom, '2026-09-14');
+  assert.deepEqual(templateImpact(data, r).items.map((i) => `${i.date} ${i.pairId} ${i.reason}`), ['2027-02-15 P-new-1 removed']);
+  const id = newPairId(data, [{ id: 'P-x' }]);
+  assert.match(id, /^P-[a-z0-9]+$/);
+  assert.ok(!versionsOf(data).some((v) => v.pairs.some((t) => t.id === id)));
+});

@@ -145,3 +145,18 @@ export function pairOp(p, patch) {
     ? { type: 'extra.update', date: p.date, id: p.id, patch }
     : { type: 'entry', date: p.date, pairId: p.id, patch };
 }
+
+/**
+ * Отправить сразу, мимо очереди (шаблон, версии и предметы — только с сетью, чтобы два телефона
+ * не разошлись в версиях шаблона). Возвращает результаты операций; без сети — бросает ошибку.
+ */
+export async function sendNow(ops) {
+  const full = ops.map((o) => ({ ...o, opId: newOpId() }));
+  const res = await postRequest(API_URL, { code: S.code, ops: full });
+  if (!res.ok) {
+    const e = new Error(res.message || 'не сохранилось'); e.kind = res.error; e.message = res.message || '';
+    if (res.error === 'bad-code') { forgetCode(); S.code = null; S.name = null; renderLogin('Ваш код больше не действует. Напишите Еремею.'); }
+    throw e;
+  }
+  return full.map((o) => res.results.find((r) => r.opId === o.opId) || { ok: false, message: 'нет ответа сервера' });
+}
