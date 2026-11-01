@@ -1,5 +1,6 @@
 // Помощники для заполнения ДЗ. Всё «выучивается» по прошлым записям — настраивать ничего не нужно.
 import { buildDay, addDays, weekday } from './schedule.js';
+import { pairInVersion } from './versions.js';
 
 const URL_RE = /https?:\/\/[^\s<>"()«»]+/g;
 const TRAILING = /[.,;:!?'”’]+$/;
@@ -29,7 +30,7 @@ export function parseTelegramLink(url) {
 }
 
 function subjectOf(data, entry) {
-  const t = data.template.find((x) => x.id === entry.pairId);
+  const t = pairInVersion(data, entry.pairId, entry.date);
   return t ? t.subject : null;
 }
 

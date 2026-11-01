@@ -11,6 +11,7 @@
 //
 // Чистые функции: получают данные, возвращают строку — проверяются тестами без браузера.
 import { buildDay, studyDates, weekday, parseDate, addDays } from './schedule.js';
+import { versionAt, pairInVersion, ruleInVersion } from './versions.js';
 import { WEEKDAYS, dayMonth, dayMonthWeekday, longDay, shortTime } from './format.js';
 
 const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹';
@@ -111,11 +112,13 @@ export function pairChanges(p, data) {
   return out;
 }
 
-/** Значение поля по шаблону и постоянным заменам на дату (без разовых замен дня). */
+/** Значение поля по шаблону (версии этой даты) и постоянным заменам на дату (без разовых замен дня). */
 function ruledValue(data, t, field, date) {
-  const rs = (data.rules || []).filter((r) => r.pairId === t.id && r.field === field && r.from <= date && (!r.to || date <= r.to))
+  const v = versionAt(data, date);
+  const base = v.pairs.find((x) => x.id === t.id) || t;
+  const rs = (data.rules || []).filter((r) => r.pairId === t.id && r.field === field && r.from <= date && (!r.to || date <= r.to) && ruleInVersion(data, v, r))
     .sort((a, b) => (a.from < b.from ? -1 : 1));
-  return rs.length ? rs[rs.length - 1].value : t[field];
+  return rs.length ? rs[rs.length - 1].value : base[field];
 }
 /** Ближайший день с этой парой шаблона, начиная с даты (до 5 недель вперёд). */
 function nextOccurrence(data, t, date) {
@@ -139,7 +142,7 @@ function describe(data, t, field, date) {
 function ruleChanges(dates, data) {
   const out = [];
   const starts = new Set();
-  const items = (data.rules || []).map((r) => ({ r, t: data.template.find((x) => x.id === r.pairId), f: groupKey(r.field) })).filter((x) => x.t);
+  const items = (data.rules || []).map((r) => ({ r, t: pairInVersion(data, r.pairId, r.from), f: groupKey(r.field) })).filter((x) => x.t);
   // начало: первый день с этой парой, начиная с даты правила
   for (const { r, t, f } of items) {
     const start = nextOccurrence(data, t, r.from);

@@ -3,6 +3,7 @@ import { buildDay, addDays } from '../schedule.js';
 import { dayMonth, shortTime } from '../format.js';
 import { h, tile, fullName } from '../dom.js';
 import { newOpId } from '../editor-api.js';
+import { versionAt, pairInVersion } from '../versions.js';
 import { $, S, hooks } from './state.js';
 import { dayLabel, findPair, renderSheet, sheetHead, flushText, SH } from './ui.js';
 
@@ -12,7 +13,7 @@ export const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
 const validTime = (t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t || '');
 export const timeOk = (t) => validTime(t[0]) && validTime(t[1]) && toMin(t[1]) > toMin(t[0]);
 export const newExtraId = () => 'X-' + newOpId().replace(/^op-/, '').replace(/-/g, '').slice(0, 20);
-const tplHalf = (p) => (S.data.template.find((t) => t.id === p.id) || {}).half;
+const tplHalf = (p) => (pairInVersion(S.data, p.id, p.date) || {}).half;
 export const halfSuffix = (p) => { const hf = tplHalf(p); return hf === 'top' ? ' — по верхним неделям' : hf === 'bottom' ? ' — по нижним неделям' : ''; };
 export const FIELD_WORD = { room: 'аудитория', teacher: 'преподаватель', start: 'время', end: 'время' };
 export const showValue = (field, v) => (field === 'start' || field === 'end' ? shortTime(v) : v);
@@ -21,8 +22,9 @@ export function backTo(date, id) { flushText(); SH.build = () => hooks.pairSheet
 export function backBtn(p) { return h('button', { type: 'button', class: 'btn btn-ghost w100', onclick: () => backTo(p.date, p.id), text: '‹ Назад к паре' }); }
 export function goPanel(p, panel) { return () => { flushText(); SH.build = () => { const q = findPair(p.date, p.id); return q ? panel(q) : hooks.pairSheet(p.date, p.id); }; renderSheet(); $('sheet').scrollTop = 0; }; }
 export const panelHead = (title, p) => sheetHead(title, `${fullName(p.subject, S.data.subjects)} · ${dayLabel(p.date)} · ${shortTime(p.start)}`, tile(p.subject, S.data.subjects));
-export const inSemester = (date) => date >= S.data.settings.semesterStart && date <= S.data.settings.semesterEnd;
-export const semesterBanner = () => h('p', { class: 'banner', text: `Дата вне семестра (${dayMonth(S.data.settings.semesterStart)} — ${dayMonth(S.data.settings.semesterEnd)}). Сохранить всё равно можно.` });
+// даты семестра — у версии шаблона, которая действует в эту дату
+export const inSemester = (date) => { const v = versionAt(S.data, date); return !v.semesterStart || (date >= v.semesterStart && date <= v.semesterEnd); };
+export const semesterBanner = (date) => { const v = versionAt(S.data, date); return h('p', { class: 'banner', text: `Дата вне семестра (${dayMonth(v.semesterStart)} — ${dayMonth(v.semesterEnd)}). Сохранить всё равно можно.` }); };
 
 /** Сетка звонков + поля «Начало/Конец» для нестандартного времени (например, физкультура 14:30). */
 export function timePicker(cur, onPick) {

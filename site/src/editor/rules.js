@@ -3,6 +3,7 @@ import { buildDay, addDays } from '../schedule.js';
 import { dayMonth, shortTime } from '../format.js';
 import { h } from '../dom.js';
 import { applyOp } from '../store.js';
+import { nextVersionAfter } from '../versions.js';
 import { S } from './state.js';
 import { commit, pairOp } from './sync.js';
 import { timeOk, halfSuffix, showValue, backTo, backBtn, panelHead, timePicker, clashWith, clashBanner, nextSameDay } from './panels.js';
@@ -55,15 +56,18 @@ function previewAfter(p, ops) {
 /** Переключатель «Только этот день / С этого дня и дальше» + необязательная дата «по». */
 function scopeControl(p, onChange) {
   const toIn = h('input', { class: 'input', id: 'scope-to', name: 'to', type: 'date', min: p.date });
+  // постоянная замена не переходит в следующую версию шаблона — честно пишем, до какого дня она действует
+  const nv = nextVersionAfter(S.data, p.date);
+  const lastDay = nv ? addDays(nv.from, -1) : '';
   const toBox = h('div', { hidden: true }, h('label', { class: 'lbl', for: 'scope-to', text: 'По какую дату (необязательно)' }), toIn,
-    h('div', { class: 'xs muted', style: 'margin-top:4px', text: 'Пусто — до конца, пока замену не снимут.' }));
+    h('div', { class: 'xs muted', style: 'margin-top:4px', text: nv ? `Пусто — по ${dayMonth(lastDay)}: с ${dayMonth(nv.from)} действует новый шаблон.` : 'Пусто — до конца, пока замену не снимут.' }));
   const state = { scope: 'day', to: '' };
   const set = (scope) => { state.scope = scope; toBox.hidden = scope !== 'from'; onChange(state); };
   toIn.addEventListener('change', () => { state.to = toIn.value; onChange(state); });
   const el = h('div', { class: 'stack', style: 'gap:8px' },
     h('div', { class: 'radio', role: 'radiogroup', 'aria-label': 'Когда действует' },
       h('label', {}, h('input', { type: 'radio', name: 'scope', value: 'day', checked: true, onchange: () => set('day') }), `Только ${dayMonth(p.date)}`),
-      h('label', {}, h('input', { type: 'radio', name: 'scope', value: 'from', onchange: () => set('from') }), `С ${dayMonth(p.date)} и дальше${halfSuffix(p)}`)),
+      h('label', {}, h('input', { type: 'radio', name: 'scope', value: 'from', onchange: () => set('from') }), `С ${dayMonth(p.date)} и дальше${halfSuffix(p)}${nv ? ` (по ${dayMonth(lastDay)}, дальше — новый шаблон)` : ''}`)),
     toBox);
   return { el, state };
 }

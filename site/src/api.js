@@ -5,8 +5,10 @@ const STORAGE_KEY = 'raspisanie-322:data:v1';
 
 /** Минимальная проверка, что пришло именно расписание, а не страница ошибки. */
 export function isValidPayload(d) {
-  return !!d && typeof d === 'object' && !d.error && Array.isArray(d.template) && d.template.length > 0
-    && !!d.settings && typeof d.settings.anchorWeek === 'string';
+  if (!d || typeof d !== 'object' || d.error || !d.settings) return false;
+  // новый сервер присылает версии шаблона, старый (и сохранённая копия) — один шаблон и опорную неделю в настройках
+  if (Array.isArray(d.versions) && d.versions.length) return d.versions.every((v) => Array.isArray(v.pairs) && typeof v.anchorWeek === 'string');
+  return Array.isArray(d.template) && d.template.length > 0 && typeof d.settings.anchorWeek === 'string';
 }
 
 function readSaved(storage) {

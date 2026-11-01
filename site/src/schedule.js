@@ -2,28 +2,11 @@
 // Только «чистые» функции: на входе данные, на выходе результат, без DOM и сети —
 // поэтому один и тот же код работает в браузере и в тестах Node.
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+import { parseDate, formatDate, addDays, weekday, mondayOf } from './dates.js';
+import { versionAt, isFirstVersion, halfIn, pairInVersion } from './versions.js';
 
-// ---------- даты (строки ГГГГ-ММ-ДД, считаем в UTC, чтобы часовой пояс не сдвигал день) ----------
+export { parseDate, formatDate, addDays, weekday, mondayOf }; // прежние места импорта продолжают работать
 
-export function parseDate(iso) {
-  const [y, m, d] = iso.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d));
-}
-export function formatDate(date) {
-  return date.toISOString().slice(0, 10);
-}
-export function addDays(iso, n) {
-  return formatDate(new Date(parseDate(iso).getTime() + n * DAY_MS));
-}
-/** День недели: 0 — воскресенье, 1 — понедельник … 6 — суббота. */
-export function weekday(iso) {
-  return parseDate(iso).getUTCDay();
-}
-/** Понедельник той недели, к которой относится дата (воскресенье — к прошедшей неделе). */
-export function mondayOf(iso) {
-  return addDays(iso, -((weekday(iso) + 6) % 7));
-}
 export function weekDates(monday) {
   return [0, 1, 2, 3, 4, 5].map((i) => addDays(monday, i));
 }
@@ -45,30 +28,29 @@ export function toMinutes(hhmm) {
 
 /** Половина недели считается от опорной недели: чётное число недель от неё — та же половина. */
 export function weekHalf(iso, settings) {
-  const weeks = Math.round((parseDate(mondayOf(iso)) - parseDate(mondayOf(settings.anchorWeek))) / (7 * DAY_MS));
-  const same = ((weeks % 2) + 2) % 2 === 0;
-  if (same) return settings.anchorHalf;
-  return settings.anchorHalf === 'top' ? 'bottom' : 'top';
+  return halfIn(settings, iso); // settings — любая запись с anchorWeek и anchorHalf (версия шаблона или старые «Настройки»)
 }
 
 // ---------- сборка дня ----------
 
 const CHANGEABLE = ['room', 'start', 'end', 'teacher'];
 
-function activeRules(rules, pairId, iso) {
+// Постоянная замена действует, только если началась не раньше версии шаблона этой даты:
+// замены прошлого семестра в новую версию не переходят (у первой версии нижней границы нет).
+function activeRules(rules, pairId, iso, since) {
   return rules
-    .filter((r) => r.pairId === pairId && r.from <= iso && (!r.to || iso <= r.to))
+    .filter((r) => r.pairId === pairId && r.from <= iso && (!r.to || iso <= r.to) && r.from >= since)
     .sort((a, b) => (a.from < b.from ? -1 : 1)); // более позднее правило применяется последним
 }
 
-function fromTemplate(t, iso, data, entriesByKey) {
+function fromTemplate(t, iso, data, entriesByKey, since) {
   const pair = {
     id: t.id, date: iso, kind: 'template',
     subject: t.subject, tgName: t.tgName, type: t.type, slots: t.slots || 1,
     start: t.start, end: t.end, room: t.room, teacher: t.teacher, note: t.note || '',
     changed: {}, ruledFrom: {},
   };
-  for (const r of activeRules(data.rules || [], t.id, iso)) {
+  for (const r of activeRules(data.rules || [], t.id, iso, since)) {
     if (CHANGEABLE.includes(r.field)) { pair[r.field] = r.value; pair.ruledFrom[r.field] = r.from; }
   }
   const e = entriesByKey.get(iso + '|' + t.id) || {};
@@ -98,7 +80,7 @@ function fromTemplate(t, iso, data, entriesByKey) {
 
 function fromExtra(x, data) {
   // перенос берёт предмет, тип и преподавателя у исходной пары шаблона, если они не указаны
-  const src = x.srcPairId ? data.template.find((t) => t.id === x.srcPairId) : null;
+  const src = x.srcPairId ? pairInVersion(data, x.srcPairId, x.srcDate) : null;
   const base = src || {};
   return {
     id: x.id, date: x.date, kind: 'extra',
@@ -115,17 +97,19 @@ function fromExtra(x, data) {
 
 const isNumbered = (p) => p.status !== 'cancelled' && p.status !== 'moved-away';
 
-/** Собирает день: шаблон нужной половины → правила → разовые записи → переносы и доп. пары → нумерация. */
+/** Собирает день: версия шаблона этой даты, её половина недели → правила → разовые записи → переносы и доп. пары → нумерация. */
 export function buildDay(iso, data) {
-  const half = weekHalf(iso, data.settings);
+  const version = versionAt(data, iso);                // шаблон, действующий в эту дату
+  const since = isFirstVersion(data, version) ? '' : version.from;
+  const half = halfIn(version, iso);
   const wd = weekday(iso);
   const entriesByKey = new Map((data.entries || []).map((e) => [e.date + '|' + e.pairId, e]));
 
   // Шаблон действует и после конца семестра (решение владельца: потом начнётся следующий,
   // и шаблон просто заменят). Даты семестра нужны только для проверки переносов.
-  const pairs = data.template
+  const pairs = version.pairs
     .filter((t) => t.day === wd && (t.half === 'both' || t.half === half))
-    .map((t) => fromTemplate(t, iso, data, entriesByKey));
+    .map((t) => fromTemplate(t, iso, data, entriesByKey, since));
   for (const x of data.extras || []) {
     if (x.date === iso && !x.cancelled) pairs.push(fromExtra(x, data));
   }

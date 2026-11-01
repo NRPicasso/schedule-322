@@ -2,6 +2,7 @@
 import { buildDay, mondayOf, weekday } from '../schedule.js';
 import { dayMonth, longDay, shortTime } from '../format.js';
 import { h, halfLabel, fullName } from '../dom.js';
+import { versionAt } from '../versions.js';
 import { $, S, TYPE, hooks } from './state.js';
 import { dayLabel, openSheet, closeSheet, sheetHead, SH } from './ui.js';
 import { commit, pairOp } from './sync.js';
@@ -63,7 +64,7 @@ export function movePanel(p) {
     warn.replaceChildren(); preview.replaceChildren(); hint.replaceChildren(); err.textContent = '';
     if (!date) return;
     hint.append(longDay(date) + ' · ', halfLabel(buildDay(date, S.data).half));
-    if (!inSemester(date)) warn.append(semesterBanner());
+    if (!inSemester(date)) warn.append(semesterBanner(date));
     if (weekday(date) === 0) warn.append(h('p', { class: 'banner', text: 'Это воскресенье. Перенести всё равно можно.' }));
     if (date === p.date && p.kind === 'template') warn.append(h('p', { class: 'banner', text: 'Это тот же день. Чтобы поменять только время, вернитесь к паре и нажмите «Время».' }));
     const c = clashWith(date, t, p);
@@ -100,7 +101,7 @@ export function movePanel(p) {
 export function openAddPair(date, ret) { openSheet(() => addPairSheet(date), ret); }
 function addPairSheet(date) {
   let t = ['18:30', '20:00'];
-  const subjects = [...new Map(S.data.template.map((x) => [x.subject + '|' + x.type, x])).values()];
+  const subjects = [...new Map(versionAt(S.data, date).pairs.map((x) => [x.subject + '|' + x.type, x])).values()]; // предметы шаблона этой даты
   const sel = h('select', { class: 'input', id: 'a-subject', name: 'subject' },
     subjects.map((x, i) => h('option', { value: String(i), text: `${fullName(x.subject, S.data.subjects)} · ${TYPE[x.type] || ''}` })), h('option', { value: 'other', text: 'Другое…' }));
   const other = h('input', { class: 'input', id: 'a-other', name: 'other', type: 'text', maxlength: '100', placeholder: 'например, Консультация к экзамену' });
@@ -109,7 +110,7 @@ function addPairSheet(date) {
   const err = h('div', { class: 'err', role: 'alert' }); const warn = h('div', { class: 'stack', style: 'gap:8px' });
   const check = () => {
     warn.replaceChildren();
-    if (!inSemester(date)) warn.append(semesterBanner());
+    if (!inSemester(date)) warn.append(semesterBanner(date));
     const c = clashWith(date, t, null); if (c) warn.append(clashBanner(c, ' Добавить всё равно можно.'));
   };
   sel.addEventListener('change', () => { otherBox.hidden = sel.value !== 'other'; if (sel.value !== 'other') room.value = subjects[Number(sel.value)].room; });
