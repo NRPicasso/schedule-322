@@ -9,7 +9,7 @@
 // • новая версия на сайте (другой VERSION) скачивается в фоне и ждёт; страница показывает
 //   «Сайт обновился · Обновить», и только по нажатию включается целиком;
 // • запросы к Google (данные расписания) не трогаем: данные всегда свежие, у них свой запас (api.js).
-const VERSION = 'eea8915b9902';
+const VERSION = '22482cc93a42';
 const PRECACHE = [
   "./",
   "admin.html",
@@ -50,6 +50,7 @@ const PRECACHE = [
   "src/editor/coach.js",
   "src/editor/conflict.js",
   "src/editor/hw.js",
+  "src/editor/import.js",
   "src/editor/login.js",
   "src/editor/move.js",
   "src/editor/notes.js",
@@ -68,6 +69,7 @@ const PRECACHE = [
   "src/editor/wizard.js",
   "src/format.js",
   "src/helpers.js",
+  "src/importer.js",
   "src/pwa.js",
   "src/schedule.js",
   "src/store.js",

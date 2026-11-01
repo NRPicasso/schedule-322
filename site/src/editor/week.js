@@ -13,6 +13,7 @@ import { openWizard } from './wizard.js';
 import { openTelegram } from './telegram-sheet.js';
 import { startCoach, endCoach, markCoachTarget, coachOn } from './coach.js';
 import { openTemplate } from './template.js';
+import { openImport } from './import.js';
 
 function renderTop() {
   const days = studyDates(S.monday, S.data).map((d) => buildDay(d, S.data));
@@ -78,6 +79,8 @@ function renderEditor() {
   } else {
     out.push(h('div', { class: 'empty' }, h('b', { text: 'На этой неделе семинаров нет' }), h('span', { class: 'muted', text: 'Можно добавить пометки дня.' })));
   }
+  // ДЗ уже написано в Telegram — вставить сообщения целиком (v0.2)
+  out.push(h('button', { type: 'button', class: 'btn btn-secondary w100', id: 'fill-import', onclick: (e) => openImport(e.currentTarget), text: 'Вставить из Telegram' }));
   for (const d of days) {
     const box = h('section', { class: 'day', id: 'day-' + d.date, 'aria-label': longDay(d.date) });
     const active = d.pairs.filter(isActive);
