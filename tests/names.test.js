@@ -105,9 +105,24 @@ test('кэш: пропавший кусок или сбой кэша — не о
   const body = 'Ж'.repeat(70000);
   const cache = fakeCache();
   cachePut_(cache, body);
-  cache.m.delete(CACHE_KEY + ':1');
+  cache.m.delete([...cache.m.keys()].find((k) => k.endsWith(':1')));
   assert.equal(cacheGet_(cache), null);
   const broken = fakeCache({ broken: true });
   assert.equal(cachePut_(broken, body), false);
   assert.equal(cacheGet_(broken), null);
+});
+
+test('кэш: эмодзи на границе кусков не разрезается; куски другого ответа не склеиваются', () => {
+  // строка, где граница первого куска (30 000 символов) приходится ровно на середину эмодзи
+  const body = 'a'.repeat(29999) + '🤩' + 'б'.repeat(100);
+  const cache = fakeCache();
+  cachePut_(cache, body);
+  const chunks = [...cache.m.entries()].filter(([k]) => k !== CACHE_KEY).map(([, v]) => v);
+  assert.ok(chunks.every((c) => !/[\uD800-\uDBFF]$/.test(c) && !/^[\uDC00-\uDFFF]/.test(c)), 'ни один кусок не кончается половиной эмодзи');
+  assert.equal(cacheGet_(cache), body);
+  // другой ответ положили поверх: читатель берёт куски только своего поколения
+  const first = cache.m.get(CACHE_KEY);
+  cachePut_(cache, 'x'.repeat(65000));
+  assert.notEqual(cache.m.get(CACHE_KEY), first);
+  assert.equal(cacheGet_(cache), 'x'.repeat(65000));
 });

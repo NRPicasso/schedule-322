@@ -3,7 +3,7 @@ import { buildDay, addDays } from '../schedule.js';
 import { dayMonth, shortTime } from '../format.js';
 import { h } from '../dom.js';
 import { applyOp } from '../store.js';
-import { nextVersionAfter } from '../versions.js';
+import { nextVersionAfter, laterRules as laterRulesIn } from '../versions.js';
 import { S } from './state.js';
 import { commit, pairOp } from './sync.js';
 import { timeOk, halfSuffix, showValue, backTo, backBtn, panelHead, timePicker, clashWith, clashBanner, nextSameDay } from './panels.js';
@@ -11,7 +11,7 @@ import { timeOk, halfSuffix, showValue, backTo, backBtn, panelHead, timePicker, 
 // ---- постоянные замены (правила) ----
 const rulesOf = (p, field) => (S.data.rules || []).filter((r) => r.pairId === p.id && r.field === field);
 /** Более поздние постоянные замены, которые перекрыли бы новую «с этого дня и дальше» (до даты «по»). */
-const laterRules = (p, field, to) => rulesOf(p, field).filter((r) => r.from > p.date && (!to || r.from <= to));
+const laterRules = (p, field, to) => laterRulesIn(S.data, p.id, field, p.date, to);
 
 /**
  * Операции «постоянно с этого дня»: убрать разовую замену этого дня (она сильнее правила),

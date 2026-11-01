@@ -47,13 +47,17 @@ export function halfLabel(half) {
   return h('span', { class: 'half' }, icon, half === 'top' ? 'верхняя неделя' : 'нижняя неделя');
 }
 
+// предмет «toString» или «constructor» не должен найтись среди служебных свойств объекта
+const own = (obj, key) => (obj && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : null);
+
 /** Цветная плитка предмета («МУН», «ГПП»…). Неизвестный предмет — серая плитка с первыми буквами. */
 export function tile(subject, subjects) {
-  const meta = subjects[subject] || { short: subject.slice(0, 3).toUpperCase(), color: 'fk' };
+  const meta = own(subjects, subject) || { short: subject.slice(0, 3).toUpperCase(), color: 'fk' };
   return h('span', { class: `tile t-${meta.color}`, 'aria-hidden': 'true', text: meta.short });
 }
 export function fullName(subject, subjects) {
-  return (subjects[subject] && subjects[subject].full) || subject;
+  const s = own(subjects, subject);
+  return (s && s.full) || subject;
 }
 
 /** Ссылка из ДЗ: только http/https, открывается в новой вкладке без доступа к нашей странице. */

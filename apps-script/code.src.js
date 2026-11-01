@@ -95,10 +95,13 @@ function versionsFrom_(tplRows, verRows, kv) {
     list = [{ id: 'V1', from: kv['начало_семестра'] || kv['опорная_неделя'] || '2000-01-01', anchorWeek: kv['опорная_неделя'],
       anchorHalf: VALUES.half[kv['опорная_половина']] || kv['опорная_половина'], semesterStart: kv['начало_семестра'], semesterEnd: kv['конец_семестра'], version: 0, pairs: [] }];
   }
-  var byId = {};
+  var byId = Object.create(null);
   list.forEach(function (v) { byId[v.id] = v; });
   tplRows.forEach(function (t) {
-    var v = byId[t.versionId] || list[0]; // строка без версии (до перехода) — первая версия
+    // строка без версии (так было до перехода) — первая версия; строка с неизвестной версией
+    // (версию удалили руками или запись оборвалась на середине) пропускается, а не попадает в V1
+    var v = t.versionId ? byId[t.versionId] : list[0];
+    if (!v || !has_(byId, v.id)) return;
     var pair = copy_(t); delete pair.versionId;
     v.pairs.push(pair);
   });
@@ -111,6 +114,7 @@ function buildPayload_(read, today) {
   ['rules', 'entries', 'extras', 'dayNotes'].forEach(function (k) { p[k] = rowsToObjects_(read(SHEETS[k].name), SHEETS[k].cols); });
   p.subjects = {};
   rowsToObjects_(read(SHEETS.subjects.name), SHEETS.subjects.cols).forEach(function (s) {
+    if (!s.subject || RESERVED_NAMES[s.subject]) return; // «__proto__» и т. п. не могут быть ключом
     p.subjects[s.subject] = { short: s.short, full: s.full, color: s.color };
   });
   var kv = {};
@@ -154,11 +158,19 @@ function publicResult_(r) {
 // кладём кусками, а любая ошибка кэша не должна ломать сам ответ сайту.
 function cachePut_(cache, body) {
   try {
-    var n = Math.ceil(body.length / CACHE_CHUNK);
-    if (!n || n > CACHE_MAX_CHUNKS) return false;
-    var parts = {};
-    for (var i = 0; i < n; i++) parts[CACHE_KEY + ':' + i] = body.slice(i * CACHE_CHUNK, (i + 1) * CACHE_CHUNK);
-    parts[CACHE_KEY] = String(n); // число кусков; удалить этот ключ = сбросить кэш
+    // поколение в ключах: читатель не склеит куски двух разных ответов
+    var gen = String(Date.now()) + Math.floor(Math.random() * 1000);
+    var parts = {}, n = 0, pos = 0;
+    while (pos < body.length) {
+      var end = Math.min(pos + CACHE_CHUNK, body.length);
+      var c = body.charCodeAt(end - 1);
+      if (end < body.length && c >= 0xD800 && c <= 0xDBFF) end -= 1; // не разрезать эмодзи (суррогатную пару) между кусками
+      parts[CACHE_KEY + ':' + gen + ':' + n] = body.slice(pos, end);
+      pos = end; n++;
+      if (n > CACHE_MAX_CHUNKS) return false;
+    }
+    if (!n) return false;
+    parts[CACHE_KEY] = n + '|' + gen; // сколько кусков и какого поколения; удалить этот ключ = сбросить кэш
     cache.putAll(parts, CACHE_SECONDS);
     return true;
   } catch (err) {
@@ -167,10 +179,11 @@ function cachePut_(cache, body) {
 }
 function cacheGet_(cache) {
   try {
-    var n = Number(cache.get(CACHE_KEY));
-    if (!n) return null;
+    var head = String(cache.get(CACHE_KEY) || '').split('|');
+    var n = Number(head[0]), gen = head[1];
+    if (!n || !gen) return null;
     var keys = [];
-    for (var i = 0; i < n; i++) keys.push(CACHE_KEY + ':' + i);
+    for (var i = 0; i < n; i++) keys.push(CACHE_KEY + ':' + gen + ':' + i);
     var got = cache.getAll(keys);
     var body = '';
     for (var j = 0; j < keys.length; j++) {
@@ -262,6 +275,9 @@ function validPatch_(p, allowed) {
 var has_ = function (obj, key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(obj, key); };
 
 // Цвета плиток предметов — те же, что в style.css (.t-mun … .t-fk): контраст проверен.
+// Имена, которые нельзя делать ключами объектов (иначе «предмет» совпадёт со служебным свойством JS)
+var OWNED_SHEETS = { template: 1, subjects: 1 }; // листы, которые сервер переписывает целиком при правке шаблона
+var RESERVED_NAMES = { '__proto__': 1, 'constructor': 1, 'prototype': 1, 'toString': 1, 'valueOf': 1, 'hasOwnProperty': 1 };
 var COLORS = { mun: 1, gpp: 1, upp: 1, up: 1, gp: 1, tp: 1, osd: 1, mp: 1, fk: 1 };
 var PAIR_HALVES = { top: 1, bottom: 1, both: 1 };
 var MAX_VERSIONS = 20, MAX_PAIRS = 60;
@@ -273,7 +289,7 @@ function validPair_(t) {
   if (!has_(PAIR_HALVES, t.half)) return 'неделя пары — верхняя, нижняя или обе';
   if (typeof t.day !== 'number' || t.day < 1 || t.day > 6 || t.day % 1) return 'день пары — с понедельника по субботу';
   if (!TIME_RE.test(t.start) || !TIME_RE.test(t.end) || t.end <= t.start) return 'время пары: конец позже начала, в формате ЧЧ:ММ';
-  if (t.slots !== 1 && t.slots !== 2) return 'пара обычная или сдвоенная';
+  if (t.slots != null && t.slots !== '' && t.slots !== 1 && t.slots !== 2) return 'пара обычная или сдвоенная'; // пусто = обычная
   if (!str_(t.subject, 100) || !t.subject.trim()) return 'у пары не указан предмет';
   if (!has_(EXTRA_TYPES, t.type)) return 'неверный тип занятия';
   if (t.tgName != null && !str_(t.tgName, 100)) return 'название для Telegram — до 100 знаков';
@@ -362,9 +378,13 @@ function validateOp_(op, pairIds) {
     case 'version.remove':
       if (typeof op.id !== 'string' || !/^V[\w-]{0,40}$/.test(op.id)) return 'неверный номер версии';
       return typeof op.baseVersion === 'number' && op.baseVersion >= 0 ? null : 'нет версии';
+    case 'subject.remove':
+      if (typeof op.name !== 'string' || !op.name.trim() || op.name.length > 100) return 'нет названия предмета';
+      return op.prev && typeof op.prev === 'object' ? null : 'нет прежних данных предмета';
     case 'subject.set': {
       var sj = op.subject;
       if (!sj || typeof sj !== 'object' || !str_(sj.subject, 100) || !sj.subject.trim()) return 'нет названия предмета';
+      if (has_(RESERVED_NAMES, sj.subject.trim())) return 'такое название предмета нельзя';
       if (!str_(sj.short, 6) || !sj.short.trim()) return 'сокращение предмета — от 1 до 6 знаков';
       if (!str_(sj.full || '', 100)) return 'полное название — до 100 знаков';
       return has_(COLORS, sj.color) ? null : 'цвет — из готовой палитры';
@@ -400,12 +420,25 @@ function processOps_(state, ops, pairIds, meta, seen) {
   var templateOp_ = function (op) {
     if (!state.versionsReady || !state.versions) { fail(op, 'invalid', 'таблица ещё не переведена на версии шаблона — напишите Еремею'); return; }
     if (!meta.today) { fail(op, 'invalid', 'нет текущей даты'); return; }
-    if (op.type === 'subject.set') {
+    if (op.type === 'subject.set' || op.type === 'subject.remove') {
       var list = state.subjects = state.subjects || [];
-      var sj = op.subject, si = findIndex_(list, function (x) { return x.subject === sj.subject.trim(); });
+      var key = op.type === 'subject.set' ? op.subject.subject.trim() : op.name.trim();
+      var si = findIndex_(list, function (x) { return x.subject === key; });
       var prevS = si >= 0 ? copy_(list[si]) : null;
       // «что было на экране» не совпало с таблицей — другой активист успел поменять предмет
-      if (op.prev && prevS && (prevS.short !== op.prev.short || (prevS.full || '') !== (op.prev.full || '') || prevS.color !== op.prev.color)) { fail(op, 'conflict', '', { current: prevS }); return; }
+      // (или добавил предмет с тем же названием: новый предмет приходит без prev)
+      var same = function (a, b) { return a.short === b.short && (a.full || '') === (b.full || '') && a.color === b.color; };
+      if (prevS && (!op.prev || !same(prevS, op.prev))) { fail(op, 'conflict', '', { current: prevS }); return; }
+      if (!prevS && op.prev) { fail(op, 'conflict', '', { current: null }); return; }        // предмет успели удалить
+      if (op.type === 'subject.remove') {
+        if (!prevS) { done(op, { opId: op.opId, ok: true }); return; }
+        var used = state.versions.some(function (v) { return v.pairs.some(function (t) { return t.subject === key; }); });
+        if (used) { fail(op, 'invalid', 'предмет есть в шаблоне — сначала уберите его из пар'); return; }
+        list.splice(si, 1);
+        done(op, { opId: op.opId, ok: true }, 'предмет −', SHEETS.subjects.name, key, prevS, null);
+        return;
+      }
+      var sj = op.subject;
       var nextS = { subject: sj.subject.trim(), short: sj.short.trim(), full: (sj.full || '').trim(), color: sj.color };
       if (si >= 0) list[si] = nextS; else list.push(nextS);
       done(op, { opId: op.opId, ok: true, subject: nextS }, 'предмет', SHEETS.subjects.name, nextS.subject, prevS, nextS);
@@ -414,10 +447,10 @@ function processOps_(state, ops, pairIds, meta, seen) {
     var id = op.type === 'version.save' ? op.tplVersion.id : op.id;
     var vi = findIndex_(state.versions, function (v) { return v.id === id; });
     var cur = vi >= 0 ? state.versions[vi] : null;
+    if (op.type === 'version.remove' && !cur) { done(op, { opId: op.opId, ok: true }); return; }  // уже удалена
     if (cur && cur.from <= meta.today) { fail(op, 'invalid', 'эта версия шаблона уже действует — сделайте новую с завтрашнего дня'); return; }
     if ((cur ? cur.version || 0 : 0) !== op.baseVersion) { fail(op, 'conflict', '', { current: cur }); return; }
     if (op.type === 'version.remove') {
-      if (!cur) { done(op, { opId: op.opId, ok: true }); return; }          // уже удалена
       if (state.versions.length < 2) { fail(op, 'invalid', 'нельзя удалить единственную версию шаблона'); return; }
       state.versions.splice(vi, 1);
       done(op, { opId: op.opId, ok: true }, 'версия шаблона −', SHEETS.versions.name, cur.id + ' с ' + cur.from, cur, null);
@@ -428,15 +461,20 @@ function processOps_(state, ops, pairIds, meta, seen) {
     if (state.versions.some(function (x) { return x.id !== v.id && x.from === v.from; })) { fail(op, 'invalid', 'с этой даты уже есть версия шаблона'); return; }
     if (!cur && state.versions.length >= MAX_VERSIONS) { fail(op, 'invalid', 'не больше ' + MAX_VERSIONS + ' версий шаблона'); return; }
     if (state.subjects) {
-      var known = {};
+      var known = Object.create(null);
       state.subjects.forEach(function (x) { known[x.subject] = true; });
-      var unknown = v.pairs.filter(function (t) { return !known[t.subject.trim()]; })[0];
+      var unknown = v.pairs.filter(function (t) { return known[t.subject.trim()] !== true || has_(RESERVED_NAMES, t.subject.trim()); })[0];
       if (unknown) { fail(op, 'invalid', 'нет такого предмета: ' + unknown.subject + ' — сначала добавьте его в список предметов'); return; }
     }
     var KEEP = ['id', 'half', 'day', 'start', 'end', 'slots', 'subject', 'tgName', 'type', 'room', 'teacher', 'note'];
     var doc = { id: v.id, from: v.from, anchorWeek: v.anchorWeek, anchorHalf: v.anchorHalf, semesterStart: v.semesterStart, semesterEnd: v.semesterEnd,
       version: (cur ? cur.version || 0 : 0) + 1, by: meta.name, updatedAt: meta.now,
-      pairs: v.pairs.map(function (t) { var o = {}; KEEP.forEach(function (k) { if (t[k] !== undefined && t[k] !== null) o[k] = typeof t[k] === 'string' ? t[k].trim() : t[k]; }); return o; }) };
+      pairs: v.pairs.map(function (t) {
+        var o = {};
+        KEEP.forEach(function (k) { if (t[k] !== undefined && t[k] !== null && t[k] !== '') o[k] = typeof t[k] === 'string' ? t[k].trim() : t[k]; });
+        o.slots = o.slots || 1;
+        return o;
+      }) };
     if (vi >= 0) state.versions[vi] = doc; else state.versions.push(doc);
     state.versions.sort(byFrom_);
     done(op, { opId: op.opId, ok: true, version: doc.version, tplVersion: doc }, cur ? 'версия шаблона' : 'версия шаблона +', SHEETS.versions.name, doc.id + ' с ' + doc.from, copy_(cur), doc);
@@ -543,6 +581,8 @@ function replayResult_(state, op) {
   } else if (op.type === 'extra.add' || op.type === 'extra.update') {
     var xid = op.type === 'extra.add' ? op.extra && op.extra.id : op.id;
     (state.extras || []).forEach(function (e) { if (e.id === xid) { base.version = e.version || 0; base.extra = e; } });
+  } else if (op.type === 'version.save' && op.tplVersion) {
+    (state.versions || []).forEach(function (v) { if (v.id === op.tplVersion.id) { base.version = v.version || 0; base.tplVersion = v; } });
   }
   return base;
 }
@@ -559,6 +599,16 @@ function writeObjects_(key, items) {
   var header = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim(); });
   var pos = def.cols.map(function (c) { return header.indexOf(c[0]); });
   if (pos.some(function (p) { return p < 0; })) throw new Error('на листе «' + def.name + '» не хватает столбцов — запись отменена');
+  // «Шаблон» и «Предметы» сервер переписывает целиком (с v0.2): свой столбец владельца с данными
+  // был бы стёрт — тогда не пишем ничего и говорим, что мешает
+  if (OWNED_SHEETS[key] && sh.getLastRow() > 1) {
+    var extra = header.map(function (h, i) { return pos.indexOf(i) < 0 ? i : -1; }).filter(function (i) { return i >= 0; });
+    if (extra.length) {
+      var vals = sh.getRange(1, 1, sh.getLastRow(), lastCol).getValues();
+      var busy = extra.filter(function (i) { return vals.some(function (r, ri) { return ri > 0 && String(r[i]).trim() !== ''; }); });
+      if (busy.length) throw new Error('на листе «' + def.name + '» есть свои столбцы с данными (' + busy.map(function (i) { return header[i] || ('столбец ' + (i + 1)); }).join(', ') + ') — перенесите их на другой лист, иначе запись их сотрёт');
+    }
+  }
   var plain = objectsToRows_(items, def.cols);
   var rows = plain.map(function (r) { var row = new Array(lastCol).fill(''); pos.forEach(function (p, i) { row[p] = r[i]; }); return row; });
   var last = sh.getLastRow();

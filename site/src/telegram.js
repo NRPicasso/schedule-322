@@ -148,6 +148,7 @@ function ruleChanges(dates, data) {
     const start = nextOccurrence(data, t, r.from);
     const key = `${t.id}|${f}|${start}`;
     if (!start || !dates.includes(start) || starts.has(key)) continue;
+    if (!ruleInVersion(data, versionAt(data, start), r)) continue; // в новой версии шаблона замена уже не действует
     starts.add(key);
     const until = r.to ? `, по ${dayMonth(r.to)}` : ' и дальше';
     const was = describe(data, t, f, addDays(r.from, -1)).replace(/^\S+ /, '');
@@ -161,6 +162,7 @@ function ruleChanges(dates, data) {
     const after = nextOccurrence(data, t, addDays(r.to, 1));
     const key = `${t.id}|${f}|${after}`;
     if (!after || !dates.includes(after) || starts.has(key) || ends.has(key)) continue;
+    if (versionAt(data, after) !== versionAt(data, r.from)) continue; // конец пришёлся на новую версию — там свой шаблон
     ends.add(key);
     const now = describe(data, t, f, after);
     const back = now === describe({ ...data, rules: [] }, t, f, after) ? 'снова ' : '';

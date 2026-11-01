@@ -241,3 +241,54 @@ test('переход migrateV2: V1 из «Настроек», всем пара�
   assert.equal(ss.getSheetByName('Версии').data.length, 2);
   assert.equal(ss.getSheetByName('Журнал').data.length, 2);
 });
+
+// ---------- проверка 01.11: исправления после независимого ревью ----------
+test('строка «Шаблона» с неизвестной версией не попадает в первую версию', () => {
+  const list = plain(versionsFrom_([{ id: 'A', day: 1 }, { id: 'X', day: 2, versionId: 'V-удалена' }], [{ id: 'V1', from: '2026-01-01' }], {}));
+  assert.deepEqual(list.map((v) => [v.id, v.pairs.map((t) => t.id).join()]), [['V1', 'A']]);
+});
+
+test('предметы: новый с уже занятым названием — конфликт; удалить можно только неиспользуемый; служебные имена нельзя', () => {
+  const st = state();
+  const out = run(st, [
+    { opId: opId(), type: 'subject.set', date: '2026-11-01', subject: { subject: 'ГПП', short: 'X', full: '', color: 'gpp' } },          // без prev
+    { opId: opId(), type: 'subject.set', date: '2026-11-01', subject: { subject: 'toString', short: 'T', full: '', color: 'gpp' } },
+    { opId: opId(), type: 'subject.set', date: '2026-11-01', subject: { subject: 'Криминалистика', short: 'КРИМ', full: '', color: 'tp' } },
+    { opId: opId(), type: 'subject.remove', date: '2026-11-01', name: 'ГПП', prev: seed.subjects['ГПП'] },
+    { opId: opId(), type: 'subject.remove', date: '2026-11-01', name: 'Криминалистика', prev: { short: 'КРИМ', full: '', color: 'tp' } },
+  ]);
+  assert.deepEqual(errors(out), ['conflict: ', 'invalid: такое название предмета нельзя', 'ok', 'invalid: предмет есть в шаблоне — сначала уберите его из пар', 'ok']);
+  assert.ok(!st.subjects.some((s) => s.subject === 'Криминалистика'));
+  assert.equal(out.logs.at(-1).action, 'предмет −');
+  // пара с «предметом» toString в версии не проходит проверку списка предметов
+  const bad = run(st, [save(draft({ pairs: [{ ...seed.template[0], subject: 'toString' }] }))]);
+  assert.match(errors(bad)[0], /нет такого предмета: toString/);
+});
+
+test('повтор удаления версии с прежним номером правки — не конфликт; пустое «слотов» сохраняется как 1', () => {
+  const st = state();
+  const pairs = springPairs().map((t, i) => (i === 0 ? { ...t, slots: '' } : t));
+  assert.deepEqual(errors(run(st, [save(draft({ pairs }))])), ['ok']);
+  assert.equal(st.versions[1].pairs[0].slots, 1);
+  const rm = { opId: opId(), type: 'version.remove', date: '2026-11-01', id: 'V-20261116', baseVersion: 1 };
+  assert.deepEqual(errors(run(st, [rm])), ['ok']);
+  assert.deepEqual(errors(run(st, [{ ...rm, opId: opId() }])), ['ok']);
+});
+
+test('запись версий в листы: «Шаблон» и «Версии» читаются обратно теми же; чужой столбец с данными — запись отменяется', () => {
+  const init = { ...sheetsWithVersions(), 'Журнал': [SHEETS.log.cols.map((c) => c[0])] };
+  const ss = fakeSpreadsheet(init);
+  const g = vm.createContext({ Utilities: { formatDate: () => '2026-11-02T10:00:00+03:00' }, SpreadsheetApp: { getActive: () => ss } });
+  vm.runInContext(code + '\nthis.api = { writeVersions_, buildPayload_ };', g);
+  const read = (n) => (ss.getSheetByName(n) ? ss.getSheetByName(n).data : []);
+  const before = plain(g.api.buildPayload_(read, '2026-11-02'));
+  g.api.writeVersions_(plain(before.versions).map((v) => ({ ...v, version: v.version || 1 })));
+  const after = plain(g.api.buildPayload_(read, '2026-11-02'));
+  assert.deepEqual(after.versions, before.versions);
+  assert.equal(ss.getSheetByName('Шаблон').data[1][1], 'обе');               // половина недели — по-русски, как была
+  // владелец добавил свой столбец «комментарий» с данными — сервер не пишет и объясняет почему
+  const tpl = ss.getSheetByName('Шаблон').data;
+  tpl[0].push('комментарий'); tpl[1].push('важно');
+  assert.throws(() => g.api.writeVersions_(plain(before.versions)), /есть свои столбцы с данными \(комментарий\)/);
+  assert.equal(tpl[1].at(-1), 'важно');
+});

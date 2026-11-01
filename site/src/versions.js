@@ -67,6 +67,17 @@ export function pairInVersion(data, id, iso) {
   return null;
 }
 
+/**
+ * Постоянные замены этого поля пары, начинающиеся позже from (и не позже to, если задано), — их
+ * снимает новая замена «с этого дня и дальше», иначе они её перекроют. Замены следующей версии
+ * шаблона не трогаем: новая замена до неё всё равно не дойдёт.
+ */
+export function laterRules(data, pairId, field, from, to) {
+  const nv = nextVersionAfter(data, from);
+  return (data.rules || []).filter((r) => r.pairId === pairId && r.field === field && r.from > from
+    && (!to || r.from <= to) && (!nv || r.from < nv.from));
+}
+
 /** Стоит ли пара шаблона (по описанию t из версии v) в дату iso. */
 export const pairOnDate = (v, t, iso) => !!t && t.day === weekday(iso) && (t.half === 'both' || t.half === halfIn(v, iso));
 

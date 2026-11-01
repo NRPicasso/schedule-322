@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildDay, addDays } from '../site/src/schedule.js';
-import { versionsOf, versionAt, nextVersionAfter, pairInVersion, copyForNewVersion, templateImpact } from '../site/src/versions.js';
+import { versionsOf, versionAt, nextVersionAfter, pairInVersion, copyForNewVersion, templateImpact, laterRules } from '../site/src/versions.js';
 import { weekChanges } from '../site/src/telegram.js';
 
 const read = (p) => JSON.parse(readFileSync(new URL(p, import.meta.url)));
@@ -148,4 +148,26 @@ test('последствия: версию ограничивает следую
 test('после последней версии правила продолжают работать до конца (следующей версии нет)', () => {
   const data = withSpring({ rules: [{ pairId: 'MON-1500', from: '2027-02-15', to: '', field: 'room', value: '777' }] });
   assert.equal(buildDay(addDays('2027-02-15', 70), data).pairs.find((p) => p.id === 'MON-1500').room, '777');
+});
+
+// ---------- проверка 01.11: граница версии ----------
+test('«с этого дня и дальше» снимает только более поздние замены своей версии, не следующей', () => {
+  const data = withSpring({ rules: [
+    { pairId: 'TUE-1500-top', from: '2026-11-24', to: '', field: 'room', value: '300' },
+    { pairId: 'TUE-1500-top', from: '2027-02-16', to: '', field: 'room', value: '305' },   // уже в весенней версии
+  ] });
+  assert.deepEqual(laterRules(data, 'TUE-1500-top', 'room', '2026-11-10', '').map((r) => r.from), ['2026-11-24']);
+  assert.deepEqual(laterRules(data, 'TUE-1500-top', 'room', '2026-11-10', '2026-11-30').map((r) => r.from), ['2026-11-24']);
+  assert.deepEqual(laterRules(data, 'TUE-1500-top', 'room', '2027-02-09', '').map((r) => r.from), ['2027-02-16']);
+});
+
+test('Telegram: замена прошлой версии не объявляется в неделе новой версии (ни начало, ни конец)', () => {
+  // пятница 05.02 — ещё осень; ближайший ГПП-лекция (пн, обе недели) — 08.02 — ещё осень (весна с 09.02);
+  // а вот вторничная пара 09.02 — уже весна: замена с 05.02 на неё не действует
+  const data = withSpring({ rules: [
+    { pairId: 'TUE-1320', from: '2027-02-05', to: '', field: 'room', value: '777' },
+    { pairId: 'THU-1320', from: '2027-01-01', to: '2027-02-09', field: 'room', value: '888' },
+  ] });
+  const list = weekChanges('2027-02-08', data).map((x) => x.text);
+  assert.ok(!list.some((t) => /777|888|снова/.test(t)), list.join('\n'));
 });
