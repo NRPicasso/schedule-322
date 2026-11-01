@@ -14,7 +14,8 @@ var TEXT_ROWS = 2000;   // сколько строк заранее делаем
 
 // Листы: [заголовок столбца по-русски, ключ в данных сайта]
 var SHEETS = {
-  template: { name: 'Шаблон', cols: [['id', 'id'], ['неделя', 'half'], ['день', 'day'], ['начало', 'start'], ['конец', 'end'], ['слотов', 'slots'], ['предмет', 'subject'], ['для_telegram', 'tgName'], ['тип', 'type'], ['аудитория', 'room'], ['преподаватель', 'teacher'], ['пометка', 'note']] },
+  template: { name: 'Шаблон', cols: [['id', 'id'], ['неделя', 'half'], ['день', 'day'], ['начало', 'start'], ['конец', 'end'], ['слотов', 'slots'], ['предмет', 'subject'], ['для_telegram', 'tgName'], ['тип', 'type'], ['аудитория', 'room'], ['преподаватель', 'teacher'], ['пометка', 'note'], ['версия_шаблона', 'versionId']] },
+  versions: { name: 'Версии', cols: [['id', 'id'], ['с_даты', 'from'], ['опорная_неделя', 'anchorWeek'], ['опорная_половина', 'anchorHalf'], ['начало_семестра', 'semesterStart'], ['конец_семестра', 'semesterEnd'], ['версия', 'version'], ['кто', 'by'], ['обновлено', 'updatedAt']] },
   subjects: { name: 'Предметы', cols: [['предмет', 'subject'], ['сокращение', 'short'], ['полное', 'full'], ['цвет', 'color']] },
   rules:    { name: 'Правила', cols: [['id_пары', 'pairId'], ['с_даты', 'from'], ['по_дату', 'to'], ['поле', 'field'], ['значение', 'value'], ['кто', 'by'], ['обновлено', 'updatedAt']] },
   entries:  { name: 'Записи', cols: [['дата', 'date'], ['id_пары', 'pairId'], ['дз', 'hw'], ['ссылки', 'links'], ['нет_дз', 'noHw'], ['аудитория', 'room'], ['начало', 'start'], ['конец', 'end'], ['преподаватель', 'teacher'], ['отменена', 'cancelled'], ['причина', 'reason'], ['версия', 'version'], ['кто', 'by'], ['обновлено', 'updatedAt']] },
@@ -49,7 +50,7 @@ function normCell_(v, key) {
   var s = String(v == null ? '' : v).trim();
   if (key === 'links') return s ? s.split(/\s*\n\s*/).filter(Boolean) : [];
   if (TIME_KEYS[key] && /^\d:\d\d$/.test(s)) s = '0' + s; // «9:40» → «09:40»
-  if (key === 'half') return VALUES.half[s] || s;
+  if (key === 'half' || key === 'anchorHalf') return VALUES.half[s] || s;
   if (key === 'type') return VALUES.type[s] || s;
   if (key === 'field') return VALUES.field[s] || s;
   return s;
@@ -75,22 +76,52 @@ function rowsToObjects_(values, cols) {
   return out;
 }
 
+// ---------- версии шаблона (v0.2) ----------
+// Шаблон хранится версиями «с даты»: лист «Версии» (даты, опорная неделя) + столбец «версия_шаблона»
+// в «Шаблоне». До перехода (migrateV2) листа «Версии» нет — тогда одна версия из «Настроек».
+
+/** Версия, действующая в дату iso (до первой версии — первая). versions отсортированы по from. */
+function versionAt_(versions, iso) {
+  var cur = versions[0];
+  versions.forEach(function (v) { if (v.from <= iso) cur = v; });
+  return cur;
+}
+var byFrom_ = function (a, b) { return a.from < b.from ? -1 : a.from > b.from ? 1 : 0; };
+
+/** Версии с парами из строк листов. kv — «Настройки» (для одной версии до перехода). */
+function versionsFrom_(tplRows, verRows, kv) {
+  var list = verRows.map(function (v) { var o = copy_(v); o.pairs = []; return o; }).sort(byFrom_);
+  if (!list.length) {
+    list = [{ id: 'V1', from: kv['начало_семестра'] || kv['опорная_неделя'] || '2000-01-01', anchorWeek: kv['опорная_неделя'],
+      anchorHalf: VALUES.half[kv['опорная_половина']] || kv['опорная_половина'], semesterStart: kv['начало_семестра'], semesterEnd: kv['конец_семестра'], version: 0, pairs: [] }];
+  }
+  var byId = {};
+  list.forEach(function (v) { byId[v.id] = v; });
+  tplRows.forEach(function (t) {
+    var v = byId[t.versionId] || list[0]; // строка без версии (до перехода) — первая версия
+    var pair = copy_(t); delete pair.versionId;
+    v.pairs.push(pair);
+  });
+  return list;
+}
+
 /** Собирает данные для сайта. read(name) возвращает значения листа — так функцию можно проверить без Google. */
-function buildPayload_(read) {
+function buildPayload_(read, today) {
   var p = {};
-  ['template', 'rules', 'entries', 'extras', 'dayNotes'].forEach(function (k) { p[k] = rowsToObjects_(read(SHEETS[k].name), SHEETS[k].cols); });
+  ['rules', 'entries', 'extras', 'dayNotes'].forEach(function (k) { p[k] = rowsToObjects_(read(SHEETS[k].name), SHEETS[k].cols); });
   p.subjects = {};
   rowsToObjects_(read(SHEETS.subjects.name), SHEETS.subjects.cols).forEach(function (s) {
     p.subjects[s.subject] = { short: s.short, full: s.full, color: s.color };
   });
   var kv = {};
   rowsToObjects_(read(SHEETS.settings.name), SHEETS.settings.cols).forEach(function (r) { kv[r.key] = r.value; });
+  p.versions = versionsFrom_(rowsToObjects_(read(SHEETS.template.name), SHEETS.template.cols), rowsToObjects_(read(SHEETS.versions.name), SHEETS.versions.cols), kv);
+  // Для открытых у кого-то старых версий сайта: шаблон и «настройки» версии, действующей сегодня.
+  var cur = versionAt_(p.versions, today || Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'));
+  p.template = cur.pairs;
   p.settings = {};
-  SETTINGS_KEYS.forEach(function (pair) {
-    var v = kv[pair[0]];
-    if (pair[1] === 'anchorHalf') v = VALUES.half[v] || v;
-    if (v !== undefined) p.settings[pair[1]] = v;
-  });
+  ['anchorWeek', 'anchorHalf', 'semesterStart', 'semesterEnd'].forEach(function (k) { if (cur[k] !== undefined) p.settings[k] = cur[k]; });
+  if (kv['завтра_после'] !== undefined) p.settings.tomorrowAfter = kv['завтра_после'];
   p.entries.forEach(function (e) { if (!e.links) e.links = []; });
   p.extras.forEach(function (e) { if (!e.links) e.links = []; });
   return publicData_(p);
@@ -107,14 +138,14 @@ function withoutName_(row) {
 }
 /** Данные для сайта без имён (правила, записи, доп. пары, пометки). */
 function publicData_(p) {
-  ['rules', 'entries', 'extras', 'dayNotes'].forEach(function (k) { if (p[k]) p[k] = p[k].map(withoutName_); });
+  ['rules', 'entries', 'extras', 'dayNotes', 'versions'].forEach(function (k) { if (p[k]) p[k] = p[k].map(withoutName_); });
   return p;
 }
 /** Ответ на операцию без имён: строка после правки и «вариант другого» в конфликте. */
 function publicResult_(r) {
   if (!r || typeof r !== 'object') return r;
   var out = {};
-  for (var k in r) out[k] = (k === 'entry' || k === 'extra' || k === 'rule' || k === 'current') ? withoutName_(r[k]) : r[k];
+  for (var k in r) out[k] = (k === 'entry' || k === 'extra' || k === 'rule' || k === 'current' || k === 'tplVersion' || k === 'subject') ? withoutName_(r[k]) : r[k];
   return out;
 }
 
@@ -230,21 +261,66 @@ function validPatch_(p, allowed) {
 }
 var has_ = function (obj, key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(obj, key); };
 
-/** Проверка одной операции. Возвращает текст ошибки или null. */
+// Цвета плиток предметов — те же, что в style.css (.t-mun … .t-fk): контраст проверен.
+var COLORS = { mun: 1, gpp: 1, upp: 1, up: 1, gp: 1, tp: 1, osd: 1, mp: 1, fk: 1 };
+var PAIR_HALVES = { top: 1, bottom: 1, both: 1 };
+var MAX_VERSIONS = 20, MAX_PAIRS = 60;
+
+/** Проверка одной пары версии шаблона. */
+function validPair_(t) {
+  if (!t || typeof t !== 'object') return 'пустая пара';
+  if (typeof t.id !== 'string' || !/^[\w-]{1,40}$/.test(t.id)) return 'неверный номер пары';
+  if (!has_(PAIR_HALVES, t.half)) return 'неделя пары — верхняя, нижняя или обе';
+  if (typeof t.day !== 'number' || t.day < 1 || t.day > 6 || t.day % 1) return 'день пары — с понедельника по субботу';
+  if (!TIME_RE.test(t.start) || !TIME_RE.test(t.end) || t.end <= t.start) return 'время пары: конец позже начала, в формате ЧЧ:ММ';
+  if (t.slots !== 1 && t.slots !== 2) return 'пара обычная или сдвоенная';
+  if (!str_(t.subject, 100) || !t.subject.trim()) return 'у пары не указан предмет';
+  if (!has_(EXTRA_TYPES, t.type)) return 'неверный тип занятия';
+  if (t.tgName != null && !str_(t.tgName, 100)) return 'название для Telegram — до 100 знаков';
+  if (!str_(t.room || '', 30)) return 'аудитория — до 30 знаков';
+  if (!str_(t.teacher || '', 60)) return 'преподаватель — до 60 знаков';
+  if (!str_(t.note || '', LIMITS.note)) return 'пометка пары — до 200 знаков';
+  return null;
+}
+/** Проверка версии шаблона целиком (без сравнения с другими версиями — это в processOps_). */
+function validVersion_(v) {
+  if (!v || typeof v !== 'object') return 'нет данных версии';
+  if (typeof v.id !== 'string' || !/^V[\w-]{0,40}$/.test(v.id)) return 'неверный номер версии';
+  if (typeof v.from !== 'string' || !DATE_RE.test(v.from)) return 'неверная дата начала версии';
+  if (typeof v.anchorWeek !== 'string' || !DATE_RE.test(v.anchorWeek) || new Date(v.anchorWeek + 'T12:00:00Z').getUTCDay() !== 1) return 'опорная неделя — дата понедельника';
+  if (v.anchorHalf !== 'top' && v.anchorHalf !== 'bottom') return 'опорная неделя — верхняя или нижняя';
+  if (!DATE_RE.test(v.semesterStart || '') || !DATE_RE.test(v.semesterEnd || '') || v.semesterEnd < v.semesterStart) return 'даты семестра: конец не раньше начала';
+  if (!Array.isArray(v.pairs) || !v.pairs.length || v.pairs.length > MAX_PAIRS) return 'в версии от 1 до ' + MAX_PAIRS + ' пар';
+  var ids = {};
+  for (var i = 0; i < v.pairs.length; i++) {
+    var e = validPair_(v.pairs[i]);
+    if (e) return e + ' (пара ' + (i + 1) + ')';
+    if (ids[v.pairs[i].id]) return 'две пары с одним номером';
+    ids[v.pairs[i].id] = true;
+  }
+  return null;
+}
+
+/**
+ * Проверка одной операции. Возвращает текст ошибки или null.
+ * pairAt(id, date) — пара шаблона, действующая в эту дату (или null). Для старых тестов можно
+ * передать объект {id: день недели} — тогда пара ищется без учёта даты.
+ */
 function validateOp_(op, pairIds) {
+  var pairAt = typeof pairIds === 'function' ? pairIds : function (id) { return has_(pairIds, id) ? { day: pairIds[id] } : null; };
   if (!op || typeof op !== 'object') return 'пустая операция';
   if (typeof op.opId !== 'string' || !/^[\w-]{8,64}$/.test(op.opId)) return 'нет номера операции';
   if (typeof op.date !== 'string' || !DATE_RE.test(op.date)) return 'неверная дата';
   switch (op.type) {
     case 'entry':
-      if (!has_(pairIds, op.pairId)) return 'такой пары нет в шаблоне';
+      if (typeof op.pairId !== 'string' || !pairAt(op.pairId, op.date)) return 'такой пары нет в шаблоне на эту дату';
       if (typeof op.baseVersion !== 'number' || op.baseVersion < 0) return 'нет версии';
       return validPatch_(op.patch, ['hw', 'links', 'noHw', 'room', 'start', 'end', 'teacher', 'cancelled', 'reason']);
     case 'note.add': case 'note.remove':
       if (typeof op.text !== 'string' || !op.text.trim() || op.text.length > LIMITS.note) return 'пометка — от 1 до 200 знаков';
       return null;
     case 'rule.set': case 'rule.remove':
-      if (!has_(pairIds, op.pairId)) return 'такой пары нет в шаблоне';
+      if (typeof op.pairId !== 'string' || !pairAt(op.pairId, op.date)) return 'такой пары нет в шаблоне на эту дату';
       if (!has_(OVERRIDE_FIELDS, op.field)) return 'это поле нельзя менять правилом';
       if (op.type === 'rule.remove') return null;
       if (op.to != null && op.to !== '' && !(typeof op.to === 'string' && DATE_RE.test(op.to) && op.to >= op.date)) return 'дата окончания должна быть не раньше начала';
@@ -257,9 +333,11 @@ function validateOp_(op, pairIds) {
       if (x.date !== op.date) return 'неверная дата';
       if (!TIME_RE.test(x.start) || !TIME_RE.test(x.end) || x.end <= x.start) return 'время окончания должно быть позже начала';
       if (x.srcPairId != null && x.srcPairId !== '') {
-        if (!has_(pairIds, x.srcPairId) || typeof x.srcDate !== 'string' || !DATE_RE.test(x.srcDate)) return 'неверная исходная пара переноса';
-        // pairIds хранит день недели пары шаблона (0 — вс … 6 — сб): перенести можно только пару, которая в этот день стоит
-        var wd = pairIds[x.srcPairId];
+        if (typeof x.srcPairId !== 'string' || typeof x.srcDate !== 'string' || !DATE_RE.test(x.srcDate)) return 'неверная исходная пара переноса';
+        var src = pairAt(x.srcPairId, x.srcDate);
+        if (!src) return 'неверная исходная пара переноса';
+        // день недели пары шаблона (0 — вс … 6 — сб): перенести можно только пару, которая в этот день стоит
+        var wd = src.day;
         if (typeof wd === 'number' && wd === wd && new Date(x.srcDate + 'T12:00:00Z').getUTCDay() !== wd) return 'этой пары нет в исходный день';
         if (x.subject != null && !str_(x.subject, 100)) return 'название предмета — до 100 знаков';
       } else if (!str_(x.subject, 100) || !x.subject.trim()) return 'укажите название предмета';
@@ -275,6 +353,22 @@ function validateOp_(op, pairIds) {
       return validPatch_(op.patch, ['date', 'start', 'end', 'room', 'teacher', 'hw', 'links', 'noHw']);
     case 'extra.remove':
       return typeof op.id === 'string' ? null : 'неверный номер пары';
+    case 'version.save': {
+      var ve = validVersion_(op.tplVersion);
+      if (ve) return ve;
+      if (op.tplVersion.from !== op.date) return 'неверная дата';
+      return typeof op.baseVersion === 'number' && op.baseVersion >= 0 ? null : 'нет версии';
+    }
+    case 'version.remove':
+      if (typeof op.id !== 'string' || !/^V[\w-]{0,40}$/.test(op.id)) return 'неверный номер версии';
+      return typeof op.baseVersion === 'number' && op.baseVersion >= 0 ? null : 'нет версии';
+    case 'subject.set': {
+      var sj = op.subject;
+      if (!sj || typeof sj !== 'object' || !str_(sj.subject, 100) || !sj.subject.trim()) return 'нет названия предмета';
+      if (!str_(sj.short, 6) || !sj.short.trim()) return 'сокращение предмета — от 1 до 6 знаков';
+      if (!str_(sj.full || '', 100)) return 'полное название — до 100 знаков';
+      return has_(COLORS, sj.color) ? null : 'цвет — из готовой палитры';
+    }
   }
   return 'неизвестная операция';
 }
@@ -284,11 +378,17 @@ function copy_(x) { return x == null ? null : JSON.parse(JSON.stringify(x)); }
 
 /**
  * Применяет операции к данным (без Google — проверяется тестами).
- * state: {entries, dayNotes, rules, extras}; meta: {name, now};
+ * state: {entries, dayNotes, rules, extras, versions?, subjects?, versionsReady?}; meta: {name, now, today};
  * seen(op) → прошлый результат, 'applied' (операция уже есть в журнале) или null.
+ * Если в state есть версии шаблона, пары проверяются по версии на дату операции; иначе — по pairIds.
  */
 function processOps_(state, ops, pairIds, meta, seen) {
   state.rules = state.rules || []; state.extras = state.extras || [];
+  var pairAt = state.versions ? function (id, date) {
+    var v = versionAt_(state.versions, date);                       // state.versions меняется внутри пачки — читаем каждый раз
+    for (var i = 0; i < v.pairs.length; i++) if (v.pairs[i].id === id) return v.pairs[i];
+    return null;
+  } : pairIds;
   var results = [], logs = [], thisBatch = {};
   var done = function (op, result, action, sheet, key, before, after) {
     results.push(thisBatch[op.opId] = result);
@@ -296,13 +396,60 @@ function processOps_(state, ops, pairIds, meta, seen) {
   };
   var fail = function (op, error, message, extra) { var r = { opId: op && op.opId, ok: false, error: error, message: message }; if (extra) for (var k in extra) r[k] = extra[k]; results.push(r); };
 
+  // ---- шаблон и предметы (v0.2): правка только версии, которая ещё не началась ----
+  var templateOp_ = function (op) {
+    if (!state.versionsReady || !state.versions) { fail(op, 'invalid', 'таблица ещё не переведена на версии шаблона — напишите Еремею'); return; }
+    if (!meta.today) { fail(op, 'invalid', 'нет текущей даты'); return; }
+    if (op.type === 'subject.set') {
+      var list = state.subjects = state.subjects || [];
+      var sj = op.subject, si = findIndex_(list, function (x) { return x.subject === sj.subject.trim(); });
+      var prevS = si >= 0 ? copy_(list[si]) : null;
+      // «что было на экране» не совпало с таблицей — другой активист успел поменять предмет
+      if (op.prev && prevS && (prevS.short !== op.prev.short || (prevS.full || '') !== (op.prev.full || '') || prevS.color !== op.prev.color)) { fail(op, 'conflict', '', { current: prevS }); return; }
+      var nextS = { subject: sj.subject.trim(), short: sj.short.trim(), full: (sj.full || '').trim(), color: sj.color };
+      if (si >= 0) list[si] = nextS; else list.push(nextS);
+      done(op, { opId: op.opId, ok: true, subject: nextS }, 'предмет', SHEETS.subjects.name, nextS.subject, prevS, nextS);
+      return;
+    }
+    var id = op.type === 'version.save' ? op.tplVersion.id : op.id;
+    var vi = findIndex_(state.versions, function (v) { return v.id === id; });
+    var cur = vi >= 0 ? state.versions[vi] : null;
+    if (cur && cur.from <= meta.today) { fail(op, 'invalid', 'эта версия шаблона уже действует — сделайте новую с завтрашнего дня'); return; }
+    if ((cur ? cur.version || 0 : 0) !== op.baseVersion) { fail(op, 'conflict', '', { current: cur }); return; }
+    if (op.type === 'version.remove') {
+      if (!cur) { done(op, { opId: op.opId, ok: true }); return; }          // уже удалена
+      if (state.versions.length < 2) { fail(op, 'invalid', 'нельзя удалить единственную версию шаблона'); return; }
+      state.versions.splice(vi, 1);
+      done(op, { opId: op.opId, ok: true }, 'версия шаблона −', SHEETS.versions.name, cur.id + ' с ' + cur.from, cur, null);
+      return;
+    }
+    var v = op.tplVersion;
+    if (v.from <= meta.today) { fail(op, 'invalid', 'новая версия шаблона — не раньше завтрашнего дня'); return; }
+    if (state.versions.some(function (x) { return x.id !== v.id && x.from === v.from; })) { fail(op, 'invalid', 'с этой даты уже есть версия шаблона'); return; }
+    if (!cur && state.versions.length >= MAX_VERSIONS) { fail(op, 'invalid', 'не больше ' + MAX_VERSIONS + ' версий шаблона'); return; }
+    if (state.subjects) {
+      var known = {};
+      state.subjects.forEach(function (x) { known[x.subject] = true; });
+      var unknown = v.pairs.filter(function (t) { return !known[t.subject.trim()]; })[0];
+      if (unknown) { fail(op, 'invalid', 'нет такого предмета: ' + unknown.subject + ' — сначала добавьте его в список предметов'); return; }
+    }
+    var KEEP = ['id', 'half', 'day', 'start', 'end', 'slots', 'subject', 'tgName', 'type', 'room', 'teacher', 'note'];
+    var doc = { id: v.id, from: v.from, anchorWeek: v.anchorWeek, anchorHalf: v.anchorHalf, semesterStart: v.semesterStart, semesterEnd: v.semesterEnd,
+      version: (cur ? cur.version || 0 : 0) + 1, by: meta.name, updatedAt: meta.now,
+      pairs: v.pairs.map(function (t) { var o = {}; KEEP.forEach(function (k) { if (t[k] !== undefined && t[k] !== null) o[k] = typeof t[k] === 'string' ? t[k].trim() : t[k]; }); return o; }) };
+    if (vi >= 0) state.versions[vi] = doc; else state.versions.push(doc);
+    state.versions.sort(byFrom_);
+    done(op, { opId: op.opId, ok: true, version: doc.version, tplVersion: doc }, cur ? 'версия шаблона' : 'версия шаблона +', SHEETS.versions.name, doc.id + ' с ' + doc.from, copy_(cur), doc);
+  };
+
   ops.forEach(function (op) {
     var id = op && op.opId;
     var prev = (id && thisBatch[id]) || seen(op);
     if (prev === 'applied') prev = replayResult_(state, op); // результат давно забыт кэшем, но журнал помнит
     if (prev) { results.push(prev); return; }               // повторная отправка той же операции — без дублей
-    var err = validateOp_(op, pairIds);
+    var err = validateOp_(op, pairAt);
     if (err) { fail(op, 'invalid', err); return; }
+    if (/^(version|subject)\./.test(op.type)) { templateOp_(op); return; }
 
     if (op.type === 'entry') {
       var idx = findIndex_(state.entries, function (e) { return e.date === op.date && e.pairId === op.pairId; });
@@ -419,6 +566,14 @@ function writeObjects_(key, items) {
   if (last > rows.length + 1) sh.getRange(rows.length + 2, 1, last - rows.length - 1, lastCol).clearContent();
 }
 
+/** Версии шаблона → листы «Версии» и «Шаблон» (пары всех версий, столбец «версия_шаблона»). */
+function writeVersions_(versions) {
+  var pairs = [];
+  versions.forEach(function (v) { v.pairs.forEach(function (t) { var o = copy_(t); o.versionId = v.id; pairs.push(o); }); });
+  writeObjects_('template', pairs); // сначала пары: если столбцов не хватит, запись остановится до изменения «Версий»
+  writeObjects_('versions', versions.map(function (v) { var o = copy_(v); delete o.pairs; return o; }));
+}
+
 /** op_id из последних строк журнала — надёжная память «эта операция уже применена». */
 function journalOpIds_() {
   var sh = SpreadsheetApp.getActive().getSheetByName(SHEETS.log.name);
@@ -460,15 +615,21 @@ function handleLocked_(req) {
   if (req.action === 'login') return { ok: true, name: name };
   var ops = Array.isArray(req.ops) ? req.ops.slice(0, LIMITS.opsPerRequest) : [];
   {
-    var pairIds = Object.create(null);
-    rowsToObjects_(readSheet_(SHEETS.template.name), SHEETS.template.cols).forEach(function (t) { pairIds[t.id] = t.day; }); // день недели — для проверки переноса
+    var kv = {};
+    rowsToObjects_(readSheet_(SHEETS.settings.name), SHEETS.settings.cols).forEach(function (r) { kv[r.key] = r.value; });
+    var verRows = rowsToObjects_(readSheet_(SHEETS.versions.name), SHEETS.versions.cols);
     var state = {
       entries: rowsToObjects_(readSheet_(SHEETS.entries.name), SHEETS.entries.cols),
       dayNotes: rowsToObjects_(readSheet_(SHEETS.dayNotes.name), SHEETS.dayNotes.cols),
       rules: rowsToObjects_(readSheet_(SHEETS.rules.name), SHEETS.rules.cols),
-      extras: rowsToObjects_(readSheet_(SHEETS.extras.name), SHEETS.extras.cols)
+      extras: rowsToObjects_(readSheet_(SHEETS.extras.name), SHEETS.extras.cols),
+      // пары проверяются по версии шаблона на дату операции
+      versions: versionsFrom_(rowsToObjects_(readSheet_(SHEETS.template.name), SHEETS.template.cols), verRows, kv),
+      versionsReady: verRows.length > 0, // править шаблон с сайта можно только после перехода (migrateV2)
+      subjects: rowsToObjects_(readSheet_(SHEETS.subjects.name), SHEETS.subjects.cols)
     };
-    var meta = { name: name, now: Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd'T'HH:mm:ssXXX") };
+    var nowDate = new Date();
+    var meta = { name: name, now: Utilities.formatDate(nowDate, TZ, "yyyy-MM-dd'T'HH:mm:ssXXX"), today: Utilities.formatDate(nowDate, TZ, 'yyyy-MM-dd') };
     var journal = null; // читаем журнал, только если кэш не помнит операцию
     var seen = function (op) {
       var id = op && op.opId;
@@ -478,7 +639,7 @@ function handleLocked_(req) {
       if (!journal) journal = journalOpIds_();
       return journal[id] ? 'applied' : null;
     };
-    var out = processOps_(state, ops, pairIds, meta, seen);
+    var out = processOps_(state, ops, null, meta, seen);
     if (out.logs.length) {
       var touched = {};
       out.logs.forEach(function (l) { touched[l.sheet] = true; });   // перезаписываем только изменённые листы
@@ -486,6 +647,8 @@ function handleLocked_(req) {
       if (touched[SHEETS.dayNotes.name]) writeObjects_('dayNotes', out.state.dayNotes);
       if (touched[SHEETS.rules.name]) writeObjects_('rules', out.state.rules);
       if (touched[SHEETS.extras.name]) writeObjects_('extras', out.state.extras);
+      if (touched[SHEETS.versions.name]) writeVersions_(out.state.versions);
+      if (touched[SHEETS.subjects.name]) writeObjects_('subjects', out.state.subjects);
       var logSheet = SpreadsheetApp.getActive().getSheetByName(SHEETS.log.name);
       out.logs.forEach(function (l) {
         logSheet.appendRow([l.at, l.by, l.action, l.sheet, l.key, JSON.stringify(l.before), JSON.stringify(l.after), l.opId]);
@@ -597,7 +760,7 @@ function menuNewCode() {
   var name = askName_(ui, 'Новый код', (names.length ? 'Сейчас активисты: ' + names.join(', ') + '.\n' : '') +
     'Впишите имя: для кого-то из списка — его старый код перестанет работать; новое имя — добавится активист. Коды остальных не изменятся.');
   if (!name) return;
-  if (names.indexOf(name) < 0 && ui.alert('Новый активист', 'Добавить активиста «' + name + '»? Это имя будет видно в журнале и в редакторе.', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  if (names.indexOf(name) < 0 && ui.alert('Новый активист', 'Добавить активиста «' + name + '»? Имя будет в журнале таблицы; на сайте его видит только сам активист после входа.', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
   var code = randomCode_();
   saveCodes_(function (codes) { return replaceCodeFor_(codes, name, hashCode_(code)); });
   ui.alert('Код для «' + name + '»: ' + code + '\n\nПередайте лично; код больше нигде не сохраняется (в таблице — только его отпечаток).');
@@ -639,7 +802,7 @@ function createActivistCodes() {
 // ---------- первое заполнение таблицы ----------
 
 function objectsToRows_(items, cols) {
-  var back = { half: invert_(VALUES.half), type: invert_(VALUES.type), field: invert_(VALUES.field) };
+  var back = { half: invert_(VALUES.half), anchorHalf: invert_(VALUES.half), type: invert_(VALUES.type), field: invert_(VALUES.field) };
   return items.map(function (o) {
     return cols.map(function (c) {
       var v = o[c[1]];
@@ -657,7 +820,9 @@ function setup() {
   var ss = SpreadsheetApp.getActive();
   var seed = SEED;
   var fill = {
-    template: seed.template,
+    template: seed.template.map(function (t) { var o = copy_(t); o.versionId = 'V1'; return o; }),
+    versions: [{ id: 'V1', from: seed.settings.semesterStart, anchorWeek: seed.settings.anchorWeek, anchorHalf: seed.settings.anchorHalf,
+      semesterStart: seed.settings.semesterStart, semesterEnd: seed.settings.semesterEnd, version: 1 }],
     subjects: Object.keys(seed.subjects).map(function (k) { var s = seed.subjects[k]; return { subject: k, short: s.short, full: s.full, color: s.color }; }),
     rules: seed.rules, entries: seed.entries, extras: [], dayNotes: seed.dayNotes, log: [],
     settings: SETTINGS_KEYS.map(function (pair) {
@@ -681,6 +846,57 @@ function setup() {
   var first = ss.getSheets()[0];
   if (first.getName() === 'Лист1' || first.getName() === 'Sheet1') { if (first.getLastRow() === 0) ss.deleteSheet(first); }
   CacheService.getScriptCache().remove(CACHE_KEY);
+}
+
+/**
+ * Переход на версии шаблона (v0.2). Запускается владельцем один раз из редактора скрипта.
+ * Ничего не удаляет: создаёт лист «Версии» с одной версией V1 (даты и опорная неделя — из «Настроек»)
+ * и проставляет V1 всем парам «Шаблона» в новом столбце «версия_шаблона». Повторный запуск ничего не меняет.
+ * Строки опорной недели и семестра в «Настройках» остаются — для отката на прежний сервер; после перехода не используются.
+ */
+function migrateV2() {
+  var ss = SpreadsheetApp.getActive();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ver = ss.getSheetByName(SHEETS.versions.name);
+    if (ver && ver.getLastRow() >= 2) { Logger.log('Переход уже сделан: лист «Версии» заполнен, ничего не меняю.'); return; }
+    var kv = {};
+    rowsToObjects_(readSheet_(SHEETS.settings.name), SHEETS.settings.cols).forEach(function (r) { kv[r.key] = r.value; });
+    var v1 = versionsFrom_([], [], kv)[0];
+    if (!DATE_RE.test(v1.from || '') || !DATE_RE.test(v1.anchorWeek || '') || (v1.anchorHalf !== 'top' && v1.anchorHalf !== 'bottom')) {
+      throw new Error('В «Настройках» не хватает опорной недели или начала семестра — переход остановлен, ничего не изменено.');
+    }
+    // 1. столбец «версия_шаблона» в «Шаблоне»: V1 у каждой строки с id
+    var tpl = ss.getSheetByName(SHEETS.template.name);
+    var lastCol = tpl.getLastColumn();
+    var header = tpl.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim(); });
+    var col = header.indexOf('версия_шаблона') + 1;
+    if (!col) { col = lastCol + 1; tpl.getRange(1, col).setValue('версия_шаблона').setFontWeight('bold'); }
+    var idCol = header.indexOf('id') + 1;
+    var n = tpl.getLastRow() - 1, pairs = 0;
+    if (n > 0) {
+      var ids = tpl.getRange(2, idCol, n, 1).getValues();
+      var marks = ids.map(function (r) { if (String(r[0]).trim()) { pairs++; return ['V1']; } return ['']; });
+      tpl.getRange(2, col, n, 1).setNumberFormat('@').setValues(marks);
+    }
+    // 2. лист «Версии»
+    if (!ver) ver = ss.insertSheet(SHEETS.versions.name);
+    var cols = SHEETS.versions.cols, width = cols.length;
+    ver.getRange(1, 1, TEXT_ROWS, width).setNumberFormat('@');
+    ver.getRange(1, 1, 1, width).setValues([cols.map(function (c) { return c[0]; })]).setFontWeight('bold');
+    ver.setFrozenRows(1);
+    var now = Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd'T'HH:mm:ssXXX");
+    delete v1.pairs; v1.version = 1; v1.by = 'переход v0.2'; v1.updatedAt = now;
+    ver.getRange(2, 1, 1, width).setValues(objectsToRows_([v1], cols));
+    ver.autoResizeColumns(1, width);
+    // 3. журнал и сброс кэша ответа сайту
+    ss.getSheetByName(SHEETS.log.name).appendRow([now, 'переход v0.2', 'версии шаблона', SHEETS.versions.name, 'V1 с ' + v1.from, '', JSON.stringify(v1), '']);
+    CacheService.getScriptCache().remove(CACHE_KEY);
+    Logger.log('Готово: версия V1 с ' + v1.from + ' (опорная неделя ' + v1.anchorWeek + '), пар в шаблоне: ' + pairs + '.');
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---------- данные для первого заполнения (сгенерировано tools/build-gs.mjs, не править руками) ----------
