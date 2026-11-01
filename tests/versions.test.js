@@ -211,3 +211,12 @@ test('черновик: что изменилось относительно о�
   assert.match(id, /^P-[a-z0-9]+$/);
   assert.ok(!versionsOf(data).some((v) => v.pairs.some((t) => t.id === id)));
 });
+
+test('проверка v0.2: замена, уже вписанная в пару копией версии, не попадает в «не перейдут»', () => {
+  const data = { ...seed, ...clone(hist), versions: [V1], rules: [{ pairId: 'THU-1320', from: '2026-10-01', to: '', field: 'room', value: '400' }] };
+  const { version } = copyForNewVersion(data, '2026-11-16');
+  assert.equal(version.pairs.find((t) => t.id === 'THU-1320').room, '400');
+  assert.deepEqual(templateImpact(data, version).notCarried, []);
+  const other = { ...version, pairs: version.pairs.map((t) => (t.id === 'THU-1320' ? { ...t, room: '221' } : t)) };  // активист вернул аудиторию
+  assert.deepEqual(templateImpact(data, other).notCarried.map((r) => r.value), ['400']);
+});

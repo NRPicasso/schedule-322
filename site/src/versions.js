@@ -170,7 +170,9 @@ export function templateImpact(data, draft) {
   // постоянные замены прежней версии, которые ещё действуют на дату начала
   const prev = before(addDays(draft.from, -1));
   const notCarried = prev === draft || prev.id === draft.id ? [] : (data.rules || []).filter((r) =>
-    ruleInVersion(data, prev, r) && r.from < draft.from && (!r.to || r.to >= draft.from) && prev.pairs.some((t) => t.id === r.pairId));
+    ruleInVersion(data, prev, r) && r.from < draft.from && (!r.to || r.to >= draft.from) && prev.pairs.some((t) => t.id === r.pairId)
+    // значение уже вписано в пару новой версии (так делает копия версии) — значит, не теряется, предупреждать не о чем
+    && !draft.pairs.some((t) => t.id === r.pairId && t[r.field] === r.value));
 
   const order = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   return { items: items.sort(order), stronger: stronger.sort((a, b) => (a.from < b.from ? -1 : 1)), notCarried };
