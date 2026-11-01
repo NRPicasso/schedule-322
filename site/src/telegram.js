@@ -62,10 +62,11 @@ export function dayText(iso, data, { emoji = false } = {}) {
   const blocks = day.pairs.map((p) => pairLines(p).join('\n'));
   let body = blocks.join('\n\n');
   if (day.notes.length) {
-    // как у активистов — сразу под последней парой; но если у неё ДЗ или она отменена/перенесена,
-    // отделяем пустой строкой, чтобы пометку не приняли за ДЗ или причину отмены
+    // как у активистов, сразу под последней парой — только под «занятием» без ДЗ (физкультура: «Сменка»,
+    // «Сдаём КСУ»); в остальных случаях отделяем пустой строкой, чтобы пометку не приняли за ДЗ или
+    // причину отмены — и чтобы «Вставить из Telegram» узнал в ней пометку дня (v0.2)
     const last = day.pairs[day.pairs.length - 1];
-    const glue = !last ? '' : last.status !== 'normal' && last.status !== 'moved-here' && last.status !== 'extra' || last.hw || last.links.length ? '\n\n' : '\n';
+    const glue = !last ? '' : last.kind === 'template' && last.type === 'other' && last.status === 'normal' && !last.hw && !last.links.length ? '\n' : '\n\n';
     body += glue + day.notes.join('\n');
   }
   return `${head}\n\n${body}`;
