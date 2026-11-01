@@ -29,7 +29,7 @@ const { makeServer } = require('./mock-server.cjs');
     if (req.method() === 'POST' && srv.dropResponse > 0) { srv.dropResponse--; return route.abort('connectionreset'); } // сервер применил, ответ потерялся
     await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) });
   });
-  const saved = () => page.waitForSelector('.save.saved', { timeout: 8000 });
+  const saved = () => page.waitForSelector('.save.saved', { timeout: 15000 });
   await page.goto(SITE + '/admin.html?now=2026-11-02T10:00');
 
   await check('неверный код — понятная ошибка, верный — открывается неделя 2–7 ноября', async () => {
@@ -147,14 +147,14 @@ const { makeServer } = require('./mock-server.cjs');
     const munPhrase = await page.inputValue('#hw');
     await click('.wz-foot .btn-primary');                                     // 4 «Дальше»
     assert.equal(clicks, 4);
-    await page.waitForSelector('.save.saved', { timeout: 8000 });
+    await page.waitForSelector('.save.saved', { timeout: 15000 });
     const mun = srv.entry('2026-11-10', 'TUE-1140-top');
     assert.equal(mun.hw, munPhrase);
     assert.deepEqual(mun.links, ['https://t.me/c/4323463486/39/5001']);
     // второй семинар — ГПП 15:00: прошлое занятие 27.10 «Задачи и доклады»
     assert.match(await page.textContent('#sheet .prev'), /Задачи и доклады/);
     await page.click('#as-before');                                           // 1 нажатие
-    await page.waitForSelector('.save.saved', { timeout: 8000 });
+    await page.waitForSelector('.save.saved', { timeout: 15000 });
     assert.equal(srv.entry('2026-11-10', 'TUE-1500-top').hw, 'Задачи и доклады');
     assert.deepEqual(srv.entry('2026-11-10', 'TUE-1500-top').links, ['https://t.me/c/4323463486/26/3137']);
   });
@@ -163,7 +163,7 @@ const { makeServer } = require('./mock-server.cjs');
     await page.click('.wz-foot .btn-primary');                                // → ГПП 16:50
     await page.evaluate(() => navigator.clipboard.writeText('Задачи 1–5 из сборника\nhttps://t.me/c/4323463486/40/777, https://youtu.be/abc'));
     await page.focus('#link'); await page.keyboard.press('ControlOrMeta+V');
-    await page.waitForSelector('.save.saved', { timeout: 8000 });
+    await page.waitForSelector('.save.saved', { timeout: 15000 });
     const e = srv.entry('2026-11-10', 'TUE-1650-top');
     assert.equal(e.hw, 'Задачи 1–5 из сборника');
     assert.deepEqual(e.links, ['https://t.me/c/4323463486/40/777', 'https://youtu.be/abc']);

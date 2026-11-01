@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "build": "node tools/build-gs.mjs && node tools/build-sw.mjs"
+    "build": "node tools/build-gs.mjs && node tools/build-sw.mjs",
+    "e2e": "bash tools/run-e2e.sh"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
   }
 }

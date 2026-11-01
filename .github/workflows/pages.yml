@@ -1,40 +1,62 @@
-# Выкладка сайта (папка site/) на GitHub Pages при каждом изменении ветки main.
-# Сначала прогоняются проверки логики (node --test): если что-то сломано, сайт не обновится.
+# Проверки и выкладка сайта (папка site/) на GitHub Pages.
+# При каждой отправке в любую ветку идут проверки: логика (node --test) и сценарии в браузере (Playwright).
+# Выкладка — только из main и только если все проверки прошли: сломанный сайт не попадёт к группе.
 name: Сайт на GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   workflow_dispatch:        # ручной запуск со страницы Actions
 
 permissions:
   contents: read
-  pages: write              # выкладывать на Pages
-  id-token: write           # подтверждать, что выкладка идёт из этого репозитория
-
-concurrency:                # одна выкладка за раз
-  group: pages
-  cancel-in-progress: false
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Зависимости для проверок (Playwright — только для проверок, на сайт не попадает)
+        run: npm ci
       - name: Проверки логики
         run: node --version && node --test
+      - name: Собранные Code.gs и sw.js совпадают с исходниками
+        run: node tools/build-gs.mjs && node tools/build-sw.mjs && git diff --exit-code -- apps-script/Code.gs site/sw.js
+      - name: Браузер для проверок
+        run: npx playwright install --with-deps chromium
+      - name: Сценарии в браузере (группа, редактор, шаблон, импорт, «как приложение»)
+        run: bash tools/run-e2e.sh
+
+  build:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - name: Собрать сайт для Pages
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
   deploy:
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write          # выкладывать на Pages
+      id-token: write       # подтверждать, что выкладка идёт из этого репозитория
+    concurrency:            # одна выкладка за раз
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Выложить на GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

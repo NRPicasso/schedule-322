@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SITE = join(ROOT, 'site');
 // data/ — только для работы без сервера на своём компьютере; лицензии шрифтов телефону не нужны
-const SKIP = [/^sw\.js$/, /^data\//, /\.txt$/, /(^|\/)\./];
+// og.png — картинка для карточки ссылки: её берёт сервер мессенджера, телефону сохранять её не нужно
+const SKIP = [/^sw\.js$/, /^data\//, /\.txt$/, /(^|\/)\./, /^icons\/og\.png$/];
 
 function walk(dir) {
   return readdirSync(dir).flatMap((name) => {
