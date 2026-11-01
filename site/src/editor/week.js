@@ -39,7 +39,6 @@ function pairRow(p) {
   if (active) {
     if (p.type === 'seminar') st.append(hasHw(p) ? h('span', { class: 'ok', text: 'ДЗ ✓' }) : p.noHw ? h('span', { class: 'muted', text: 'ДЗ нет' }) : h('span', { class: 'need', text: 'нет ДЗ' }));
     else if (hasHw(p)) st.append(h('span', { class: 'ok', text: 'ДЗ ✓' }));
-    if (p.updatedBy) st.append(h('span', { class: 'muted', text: p.updatedBy }));
   }
   const label = `${p.numbers.length ? p.numbers.join(' и ') + ' пара, ' : ''}${shortTime(p.start)}, ${fullName(p.subject, S.data.subjects)}, ${TYPE[p.type] || ''}, аудитория ${p.room}`
     + (p.status === 'cancelled' ? ', отменена' : '') + (p.status === 'moved-away' ? ', перенесена' : '');

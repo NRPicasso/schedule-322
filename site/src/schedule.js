@@ -84,7 +84,7 @@ function fromTemplate(t, iso, data, entriesByKey) {
   pair.links = e.links || [];
   pair.noHw = !!e.noHw;
   pair.reason = e.reason || '';
-  pair.updatedBy = e.by; pair.updatedAt = e.updatedAt;
+  pair.updatedAt = e.updatedAt;
 
   const moved = (data.extras || []).find((x) => x.srcDate === iso && x.srcPairId === t.id && !x.cancelled);
   if (moved) {
@@ -107,7 +107,7 @@ function fromExtra(x, data) {
     start: x.start, end: x.end, room: x.room || base.room || '', teacher: x.teacher || base.teacher || '', note: src ? base.note || '' : '',
     changed: {}, ruledFrom: {},
     hw: x.hw || '', links: x.links || [], noHw: !!x.noHw, reason: '',
-    updatedBy: x.by, updatedAt: x.updatedAt,
+    updatedAt: x.updatedAt,
     status: src ? 'moved-here' : 'extra',
     movedFrom: src ? x.srcDate : undefined,
   };

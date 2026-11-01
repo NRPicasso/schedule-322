@@ -12,7 +12,6 @@ export function showConflict(op, current) {
   const pair = (isExtra ? findPair((local() || current || op).date, op.id) : findPair(op.date, op.pairId)) || current || {};
   const mine = { subject: pair.subject, ...op.patch };
   const theirs = current || { hw: '', links: [] };
-  const who = theirs.by || 'другой активист';
   const done = closeDialog;
   // показываем только то, что меняли: ДЗ, дату, аудиторию, время, преподавателя, отмену
   const keys = Object.keys(op.patch);
@@ -31,7 +30,7 @@ export function showConflict(op, current) {
   const keepTheirs = () => {
     if (current) { const e = local(); if (e) Object.assign(e, current); else if (isExtra) S.data.extras.push({ ...current }); }
     else S.data.entries = S.data.entries.filter((x) => !(x.date === op.date && x.pairId === op.pairId)); // на сервере записи нет
-    done(); hooks.render(); toast('Оставлен вариант: ' + who);
+    done(); hooks.render(); toast('Оставлен вариант другого активиста');
   };
   const keepMine = () => {
     setServerVersion(); done();
@@ -43,13 +42,13 @@ export function showConflict(op, current) {
     commit(again({ ...op.patch, links }), 'Ссылки объединены', { undoable: false });
   };
   $('dialog').replaceChildren(h('div', { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'cf-title' }, h('div', { class: 'box' },
-    h('h2', { id: 'cf-title', text: `${who} уже изменил(а) эту пару` }),
+    h('h2', { id: 'cf-title', text: 'Эту пару уже изменил другой активист' }),
     h('p', { class: 'small muted', style: 'margin:0', text: `${fullName(mine.subject || '', S.data.subjects)} · ${longDay(op.date)}. Какой вариант оставить?` }),
     h('div', { class: 'cols' },
-      h('div', { class: 'variant' }, h('b', { text: 'Вариант: ' + who }), h('div', { style: 'white-space:pre-wrap', text: describe(theirs) })),
+      h('div', { class: 'variant' }, h('b', { text: 'Вариант другого активиста' }), h('div', { style: 'white-space:pre-wrap', text: describe(theirs) })),
       h('div', { class: 'variant' }, h('b', { text: 'Ваш вариант' }), h('div', { style: 'white-space:pre-wrap', text: describe(mine) }))),
     h('div', { class: 'cols' },
-      h('button', { type: 'button', class: 'btn btn-secondary', onclick: keepTheirs, text: 'Оставить вариант ' + who }),
+      h('button', { type: 'button', class: 'btn btn-secondary', onclick: keepTheirs, text: 'Оставить тот вариант' }),
       h('button', { type: 'button', class: 'btn btn-primary', onclick: keepMine, text: 'Оставить мой' })),
     'links' in op.patch ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: mergeLinks, text: 'Объединить ссылки' }) : null)));
   $('dialog').querySelector('button').focus();

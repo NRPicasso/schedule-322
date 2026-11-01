@@ -6,8 +6,10 @@
  * @OnlyCurrentDoc  — скрипт видит только эту таблицу, а не весь Google Диск.
  */
 var TZ = 'Europe/Moscow';
-var CACHE_KEY = 'payload-v1';
+var CACHE_KEY = 'payload-v2';  // v2: в ответе больше нет имён активистов (старый ответ из кэша сразу не годится)
 var CACHE_SECONDS = 60; // правка ячейки руками видна на сайте не позже чем через минуту
+var CACHE_CHUNK = 30000; // символов в одном куске кэша: даже 3 байта на символ — 90 КБ < лимита 100 КБ на значение
+var CACHE_MAX_CHUNKS = 30;
 var TEXT_ROWS = 2000;   // сколько строк заранее делаем «текстовыми», чтобы Таблица не превращала 15:00 и 2026-10-27 в даты
 
 // Листы: [заголовок столбца по-русски, ключ в данных сайта]
@@ -91,7 +93,63 @@ function buildPayload_(read) {
   });
   p.entries.forEach(function (e) { if (!e.links) e.links = []; });
   p.extras.forEach(function (e) { if (!e.links) e.links = []; });
+  return publicData_(p);
+}
+
+// ---------- имена активистов не уходят с сервера ----------
+// Кто правил — видно только в таблице (столбцы «кто» и журнал). Сайт открыт всем по ссылке,
+// поэтому из данных и из ответов на правки поле by убирается.
+function withoutName_(row) {
+  if (!row || typeof row !== 'object') return row;
+  var out = {};
+  for (var k in row) if (k !== 'by') out[k] = row[k];
+  return out;
+}
+/** Данные для сайта без имён (правила, записи, доп. пары, пометки). */
+function publicData_(p) {
+  ['rules', 'entries', 'extras', 'dayNotes'].forEach(function (k) { if (p[k]) p[k] = p[k].map(withoutName_); });
   return p;
+}
+/** Ответ на операцию без имён: строка после правки и «вариант другого» в конфликте. */
+function publicResult_(r) {
+  if (!r || typeof r !== 'object') return r;
+  var out = {};
+  for (var k in r) out[k] = (k === 'entry' || k === 'extra' || k === 'rule' || k === 'current') ? withoutName_(r[k]) : r[k];
+  return out;
+}
+
+// ---------- кэш ответа по кускам ----------
+// У CacheService лимит 100 КБ на значение (в байтах; русская буква — 2 байта). Большой ответ
+// кладём кусками, а любая ошибка кэша не должна ломать сам ответ сайту.
+function cachePut_(cache, body) {
+  try {
+    var n = Math.ceil(body.length / CACHE_CHUNK);
+    if (!n || n > CACHE_MAX_CHUNKS) return false;
+    var parts = {};
+    for (var i = 0; i < n; i++) parts[CACHE_KEY + ':' + i] = body.slice(i * CACHE_CHUNK, (i + 1) * CACHE_CHUNK);
+    parts[CACHE_KEY] = String(n); // число кусков; удалить этот ключ = сбросить кэш
+    cache.putAll(parts, CACHE_SECONDS);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+function cacheGet_(cache) {
+  try {
+    var n = Number(cache.get(CACHE_KEY));
+    if (!n) return null;
+    var keys = [];
+    for (var i = 0; i < n; i++) keys.push(CACHE_KEY + ':' + i);
+    var got = cache.getAll(keys);
+    var body = '';
+    for (var j = 0; j < keys.length; j++) {
+      if (typeof got[keys[j]] !== 'string') return null; // кусок успел пропасть — читаем таблицу заново
+      body += got[keys[j]];
+    }
+    return body;
+  } catch (err) {
+    return null;
+  }
 }
 
 function readSheet_(name) {
@@ -102,7 +160,7 @@ function readSheet_(name) {
 /** GET-запрос сайта: отдаёт всё расписание одним JSON. */
 function doGet() {
   var cache = CacheService.getScriptCache();
-  var body = cache.get(CACHE_KEY);
+  var body = cacheGet_(cache);
   if (!body) {
     var lock = LockService.getScriptLock();
     var locked = lock.tryLock(10000);
@@ -110,7 +168,7 @@ function doGet() {
       var payload = buildPayload_(readSheet_);
       payload.generatedAt = new Date().toISOString();
       body = JSON.stringify(payload);
-      if (body.length < 90000) cache.put(CACHE_KEY, body, CACHE_SECONDS); // кэш хранит до 100 КБ на ключ
+      cachePut_(cache, body);
     } catch (err) {
       body = JSON.stringify({ error: 'Не удалось прочитать таблицу: ' + err.message });
     } finally {
@@ -325,7 +383,7 @@ function processOps_(state, ops, pairIds, meta, seen) {
     state.extras[xi] = upd;
     done(op, { opId: op.opId, ok: true, version: upd.version, extra: upd }, 'доп./перенос', SHEETS.extras.name, upd.date + ' ' + upd.id, copy_(cur), upd);
   });
-  return { state: state, results: results, logs: logs };
+  return { state: state, results: results.map(publicResult_), logs: logs }; // в листы и журнал — с именем, сайту — без
 }
 
 /** Ответ на повтор операции, которая уже применена (по журналу): текущее состояние строки. */

@@ -74,13 +74,15 @@ const fresh = () => ({ entries: JSON.parse(JSON.stringify(history.entries)), day
 const noSeen = () => null;
 const op = (o) => ({ opId: 'op-' + Math.random().toString(36).slice(2, 12), type: 'entry', date: '2026-11-03', pairId: 'TUE-1140-bot', baseVersion: 0, patch: { hw: 'Доклады' }, ...o });
 
-test('новая запись ДЗ: версия 1, кто и когда, строка в журнал', () => {
+test('новая запись ДЗ: версия 1, кто и когда — в таблицу и журнал, в ответ сайту — без имени', () => {
   const out = processOps_(fresh(), [op()], pairIds, meta, noSeen);
   const r = out.results[0];
   assert.equal(r.ok, true);
   assert.equal(r.version, 1);
-  assert.equal(r.entry.by, 'Активист 1');
+  assert.equal(r.entry.by, undefined);
+  assert.equal(out.state.entries.at(-1).by, 'Активист 1');
   assert.equal(out.logs.length, 1);
+  assert.equal(out.logs[0].by, 'Активист 1');
   assert.equal(out.state.entries.at(-1).hw, 'Доклады');
 });
 
@@ -98,7 +100,7 @@ test('повторная отправка той же операции не со
   const s = fresh(); const o = op();
   const first = processOps_(s, [o], pairIds, meta, noSeen).results[0];
   const again = processOps_(s, [o], pairIds, meta, (x) => (x.opId === o.opId ? first : null));
-  assert.equal(again.results[0], first);
+  assert.deepEqual(again.results[0], first); // тот же ответ (копия без имён), а не новая запись
   assert.equal(again.logs.length, 0);
   assert.equal(s.entries.filter((e) => e.date === '2026-11-03').length, 1);
 });

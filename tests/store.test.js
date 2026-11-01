@@ -12,7 +12,8 @@ test('правка ДЗ видна сразу и помнит прежнее з�
   const undo = inverseOf(data, op);
   applyOp(data, op, { name: 'Активист 1' });
   assert.equal(data.entries[0].hw, 'Доклады');
-  assert.equal(data.entries[0].by, 'Активист 1');
+  assert.equal(data.entries[0].by, undefined);                 // имя на телефоне не храним
+  assert.ok(data.entries[0].updatedAt);
   assert.deepEqual(undo.patch, { hw: 'Старое', noHw: false });
   applyOp(data, undo, { name: 'Активист 1' });
   assert.equal(data.entries[0].hw, 'Старое');

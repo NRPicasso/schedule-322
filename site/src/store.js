@@ -43,7 +43,8 @@ function findExtra(data, id) { return (data.extras || []).find((x) => x.id === i
 function findRule(data, op) {
   return (data.rules || []).find((r) => r.pairId === op.pairId && r.field === op.field && r.from === op.date) || null;
 }
-function stamp(obj, meta) { if (meta.name) { obj.by = meta.name; obj.updatedAt = new Date().toISOString(); } }
+// кто правил, на телефоне не храним и не показываем (имена — только в таблице); время — для метки «изменено недавно»
+function stamp(obj, meta) { if (meta.name) obj.updatedAt = new Date().toISOString(); }
 
 /** Применяет операцию к данным на экране (как сервер, но без проверки версий). */
 export function applyOp(data, op, meta = {}) {

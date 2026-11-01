@@ -14,7 +14,7 @@ const API = /script\.google\.com\/macros\/s\/.+\/exec/;
 
 function makeServer() {
   const ctx = vm.createContext({ Utilities: { formatDate: (d) => d.toISOString() } });
-  vm.runInContext(read('apps-script/code.src.js') + '\nthis.api = { processOps_ };', ctx);
+  vm.runInContext(read('apps-script/code.src.js') + '\nthis.api = { processOps_, publicData_ };', ctx);
   const seed = JSON.parse(read('site/data/seed.json'));
   const hist = JSON.parse(read('site/data/demo-entries.json'));
   const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -23,7 +23,7 @@ function makeServer() {
   const codes = { '123456': 'Активист 1', '654321': 'Активист 2' };
   const seen = new Map(); const logs = [];
   const srv = { state, logs, offline: false, dropResponse: 0, posts: 0,
-    payload: () => clone({ ...seed, rules: state.rules, extras: state.extras, entries: state.entries, dayNotes: state.dayNotes }),
+    payload: () => clone(ctx.api.publicData_(clone({ ...seed, rules: state.rules, extras: state.extras, entries: state.entries, dayNotes: state.dayNotes }))), // как buildPayload_: без имён
     post(req) {
       srv.posts++;
       const name = codes[req.code];
@@ -151,7 +151,8 @@ function makeServer() {
     await page.click('.prow:has-text("Муниципальное право")');
     await page.fill('#hw', 'Дебаты: аргументы сторон'); await page.waitForTimeout(1300);
     await page.waitForSelector('.dialog');
-    assert.match(await page.textContent('.dialog'), /Активист 2 уже изменил/);
+    assert.match(await page.textContent('.dialog'), /Эту пару уже изменил другой активист/);
+    assert.doesNotMatch(await page.textContent('.dialog'), /Активист 2/);                    // имя другого не показывается
     assert.equal(srv.entry('2026-11-03', 'TUE-1140-bot').hw, 'Анализ Устава, часть 2');
     await page.click('.dialog button:has-text("Оставить мой")'); await saved();
     assert.equal(srv.entry('2026-11-03', 'TUE-1140-bot').hw, 'Дебаты: аргументы сторон');
@@ -414,7 +415,7 @@ function makeServer() {
     srv.post({ code: '654321', ops: [{ opId: 'op-other-0002', type: 'extra.update', date: x.date, id: x.id, baseVersion: x.version, patch: { hw: 'Глава 8 от Активист 2' } }] });
     await page.fill('#hw', 'Глава 7 и 8'); await page.waitForTimeout(1300);
     await page.waitForSelector('.dialog');
-    assert.match(await page.textContent('.dialog'), /Активист 2 уже изменил[\s\S]*Глава 8 от Активист 2[\s\S]*Глава 7 и 8/);
+    assert.match(await page.textContent('.dialog'), /Эту пару уже изменил другой активист[\s\S]*Глава 8 от Активист 2[\s\S]*Глава 7 и 8/);
     await page.click('.dialog button:has-text("Оставить мой")'); await saved();
     assert.equal(srv.state.extras.find((e) => e.id === x.id).hw, 'Глава 7 и 8');
     assert.equal(await page.locator('.dialog').count(), 0);
